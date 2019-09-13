@@ -1,0 +1,7 @@
+﻿  Compiling CUDA source file kernel.cu...
+  
+  G:\ユーザー\ToTTi\Desktop\program\cuda_c++\buddhabrot\buddhabrot>"G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\bin\nvcc.exe" -gencode=arch=compute_35,code=\"sm_35,compute_35\" --use-local-env -ccbin "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Tools\MSVC\14.22.27905\bin\HostX86\x64" -x cu  -I"G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\include" -I"G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\include"  -G   --keep-dir x64\Debug -maxrregcount=0  --machine 64 --compile -cudart static -Xcompiler "/wd 4819" -g   -DWIN32 -DWIN64 -D_DEBUG -D_CONSOLE -D_MBCS -Xcompiler "/EHsc /W3 /nologo /Od /Fdx64\Debug\vc142.pdb /FS /Zi /RTC1 /MDd " -o x64\Debug\kernel.cu.obj "G:\ユーザー\ToTTi\Desktop\program\cuda_c++\buddhabrot\buddhabrot\kernel.cu" 
+  kernel.cu
+LINK : warning LNK4044: オプション '/Xcompiler' は無効です。無視されます。
+LINK : warning LNK4044: オプション '/wd 4819' は無効です。無視されます。
+  buddhabrot.vcxproj -> G:\ユーザー\ToTTi\Desktop\program\cuda_c++\buddhabrot\x64\Debug\buddhabrot.exe
