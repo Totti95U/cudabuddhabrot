@@ -57,6 +57,25 @@ __device__ void draw_point(int* buddha, complex z, const graphic g) {
 	}
 }
 
+__device__ int checkinMainBulb(complex z) {
+	float q = (z.real - 1.0 / 4.0) * (z.real - 1.0 / 4.0) + z.imag * z.imag;
+	if (q * (q + (z.real - 1.0 / 4.0)) < (z.imag * z.imag) / 4.0) {
+		return 1;
+	}
+	else {
+		return 0;
+	}
+}
+
+__device__ int checkinSecondDisc(complex z) {
+	if ((z.real + 1) * (z.real + 1) + z.imag * z.imag < 0.25*0.25) {
+		return 1;
+	}
+	else {
+		return 0;
+	}
+}
+
 __global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationContorol iteration, curandStateMRG32k3a_t* states) {
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 	int sample_point;
@@ -69,14 +88,13 @@ __global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationCon
 
 
 		// Initialize complex number z and flag sample_point
-		// z_start.real = 0; z_start.imag = 0;
-
-		// To render Buddha Hologram.
-		z_start.real = -1 / 4 + 1 / 2 * curand_uniform(&states[index]);
-		z_start.imag = -1 / 4 + 1 / 2 * curand_uniform(&states[index]);
+		z_start.real = 0; z_start.imag = 0;
 
 		z = z_start;
 		sample_point = 0;
+
+		if (checkinMainBulb(c) || checkinSecondDisc(c))
+			continue;
 
 		// Judge whether a point z is escape.
 		for (int j = 0; j < iteration.max_iteration; j++) {
@@ -95,12 +113,7 @@ __global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationCon
 		// sampling
 		if (sample_point) {
 			// Initialize complex number z
-			// z.real = 0; z.imag = 0;
-
-			// To render Buddha Hologram.
-			z.real = -1 / 4 + 1 / 2 * curand_uniform(&states[index]);
-			z.imag = -1 / 4 + 1 / 2 * curand_uniform(&states[index]);
-			// z = z_start;
+			z = z_start;
 
 			for (int j = 0; j < iteration.max_iteration; j++) {
 				z_tmp.real = (z.real * z.real - z.imag * z.imag) + c.real;
@@ -160,7 +173,7 @@ void saveImage(int* data, graphic g) {
 	// Write pixel.
 	for (int i = 0; i < g.h; i++) {
 		for (int j = 0; j < g.w; j++) {
-			tmp = 0xffff * sqrt((data[i * g.w + j] - min) / ((double)max));
+			tmp = 0xffff * (data[i * g.w + j] - min) / ((double)max);
 			fprintf(fp, "%d ", tmp);
 		}
 		fprintf(fp, "\n");
@@ -266,7 +279,7 @@ int main()
 	iterationContorol iteration;
 	iteration.samples_per_thread = 100;
 	iteration.min_iteration = 1;
-	iteration.max_iteration = 1000;
+	iteration.max_iteration = 400;
 
 	int* buddha = (int*)malloc(sizeof(int) * WIDTH * HEIGHT);
 	if (buddha == NULL) {

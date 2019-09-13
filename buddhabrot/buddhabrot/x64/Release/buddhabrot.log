@@ -83,7 +83,7 @@ G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\include\cuda_runtime_ap
 G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\include\cuda_runtime.h(1): warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
 G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\include\cuda_runtime.h(1): warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
   kernel.cu
-G:/ユ[ザ[/ToTTi/Desktop/program/cuda_c++/buddhabrot/buddhabrot/kernel.cu(163): warning C4244: '=': 'double' から 'int' への変換です。データが失われる可能性があります。
+G:/ユ[ザ[/ToTTi/Desktop/program/cuda_c++/buddhabrot/buddhabrot/kernel.cu(176): warning C4244: '=': 'double' から 'int' への変換です。データが失われる可能性があります。
 G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\include\crt\math_functions.h(1): warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
 G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\include\crt\math_functions.h(825): warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
 G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.1\include\crt\math_functions.h(1760): warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
