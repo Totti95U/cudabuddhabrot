@@ -53,15 +53,12 @@ __global__ void initRNG(const unsigned int seed, curandStateMRG32k3a_t* states) 
 	curand_init(seed, index, 0, states + index);
 }
 
-__device__ void draw_point(int* buddha, complex z, const graphic g) {
-	int xnum, ynum;
-	if (g.min_real < z.real && z.real < g.max_real &&
-		g.min_imag < z.imag && z.imag < g.max_imag) {
-		xnum = (z.real - g.min_real) / g.dx;
-		ynum = (z.imag - g.min_imag) / g.dy;
-
-		buddha[xnum + ynum * g.w] += 1;
+__device__ int checkinWindow(complex z, graphic graph) {
+	if (graph.min_real < z.real && z.real < graph.max_real &&
+		graph.min_imag < z.imag && z.imag < graph.max_imag) {
+		return 1;
 	}
+	return 0;
 }
 
 __device__ int checkinMainBulb(complex z) {
@@ -75,11 +72,55 @@ __device__ int checkinMainBulb(complex z) {
 }
 
 __device__ int checkinSecondDisc(complex z) {
-	if ((z.real + 1) * (z.real + 1) + z.imag * z.imag < 0.25*0.25) {
+	if ((z.real + 1) * (z.real + 1) + z.imag * z.imag < 0.25 * 0.25) {
 		return 1;
 	}
 	else {
 		return 0;
+	}
+}
+
+__global__ void estImportance(int* importance, graphic graph, iterationContorol iteration) {
+	int index[2] = { (blockIdx.x * blockDim.x) + threadIdx.x, (blockIdx.y * blockDim.y) + threadIdx.y };
+	int gridnum = 1024;
+	complex c, z_tmp, z;
+	if (index[1] == 0 && index[2] == 0)
+		printf("%d", gridnum);
+
+	// Initiarize complex num c , z and int importance.
+	c.real = -3.0 + 6.0 * index[1] / gridnum;
+	c.imag = -3.0 + 6.0 * index[2] / gridnum;
+	z.real = 0.0; z.imag = 0.0;
+	importance[index[1] + index[2] * gridnum] = 0;
+
+	if (checkinMainBulb(c) || checkinSecondDisc(c)) {
+		importance[index[1] + index[2] * gridnum] = 0;
+		return;
+	}
+	for (int i = 0; i < iteration.max_iteration; i++) {
+		z_tmp.real = z.real * z.real - z.imag * z.imag + c.real;
+		z_tmp.imag = 2 * z.real * z.imag + c.imag;
+		z = z_tmp;
+		if (z.real * z.real + z.imag * z.imag > 16) {
+			return;
+		}
+		else if (checkinWindow(z, graph)) {
+			importance[index[1] + index[2] * gridnum] = 1;
+		}
+	}
+
+	importance[index[1] + index[2] * gridnum] = 0;
+
+	return;
+}
+
+__device__ void draw_point(int* buddha, complex z, const graphic g) {
+	int xnum, ynum;
+	if (checkinWindow(z, g)) {
+		xnum = (z.real - g.min_real) / g.dx;
+		ynum = (z.imag - g.min_imag) / g.dy;
+
+		buddha[xnum + ynum * g.w] += 1;
 	}
 }
 
@@ -150,6 +191,49 @@ __global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationCon
 
 
 
+int checkImportance(const int* importance, const int i, const int j, const int gridnum) {
+	if (importance[i + j*gridnum])
+		return 1;
+
+	else if (i > 0) {
+		if (importance[i - 1 + j * gridnum])
+			return 1;
+	}
+	else if (i < gridnum) {
+		if (importance[i + 1 + j * gridnum])
+			return 1;
+	}
+	else if (j > 0) {
+		if (importance[i + (j - 1) * gridnum])
+			return 1;
+	}
+	else if (j < gridnum) {
+		if (importance[i + (j + 1) * gridnum])
+			return 1;
+	}
+	return 0;
+}
+
+complex* makeRandTable(int* importance, const graphic graph, const iterationContorol iteration, const int gridnum) {
+	int sum = 0, rtindex = 0, gridnum = 1024;
+	complex c;
+
+	for (int i = 0; i < gridnum * gridnum; i++) {
+		sum += importance[i];
+	}
+	complex* randTable = (complex*)malloc(sizeof(complex) * sum);
+	for (int i = 0; i < gridnum; i++) {
+		for (int j = 0; j < gridnum; j++) {
+			if (checkImportance(importance, i, j, gridnum)) {
+				c.real = -3 + 6 * j / gridnum;
+				c.imag = -3 + 6 * i / gridnum;
+				randTable[rtindex] = c;
+			}
+		}
+	}
+	return randTable;
+}
+
 int est_min(int* data, unsigned int n) {
 	int length = WIDTH * HEIGHT;
 	int toReturn[10] = { data[0] };
@@ -200,16 +284,18 @@ void saveImage(int* data, graphic g) {
 }
 
 
-
 cudaError renderImage(int* buddha, graphic graph, iterationContorol iteration) {
 	curandStateMRG32k3a_t* dev_states;
+	int* dev_importance;
 	int* dev_buddha;
 
 	cudaError_t cudaStatus;
 	
-
+	const int rtGridnum = 1024;
 	const int blocks = 256*256;
 	const int threads = 16;
+
+	int* importance = (int*)malloc(sizeof(int) * rtGridnum * rtGridnum);
 
 	cudaStatus = cudaSetDevice(0);
 	if (cudaStatus != cudaSuccess) {
@@ -230,6 +316,12 @@ cudaError renderImage(int* buddha, graphic graph, iterationContorol iteration) {
 		goto Error;
 	}
 
+	cudaStatus = cudaMalloc((void**)& dev_importance, sizeof(int) * rtGridnum * rtGridnum);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
 	// Copy input vectors from host memory to GPU buffers.
 	cudaStatus = cudaMemcpy(dev_buddha, buddha, WIDTH * HEIGHT * sizeof(int), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
@@ -240,13 +332,26 @@ cudaError renderImage(int* buddha, graphic graph, iterationContorol iteration) {
 	// Initialize random generator.
 	initRNG <<<blocks, threads>>> (1222, dev_states);
 	
+
+	// Make random table.
+	dim3 rtblocks = { 256, 256, 0 }, rtthreads = { 4, 4, 0 };
+
+	estImportance <<<rtblocks, rtthreads >>> (dev_importance, graph, iteration);
+
+	cudaStatus = cudaMemcpy(importance, dev_importance, sizeof(int) * rtGridnum * rtGridnum, cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	complex* randTable = makeRandTable(importance, graph, iteration, rtGridnum);
+
 	// Compute buddhabrot.
-	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, graph, iteration, dev_states);
+	computeBuddhabrot <<<rtblocks, rtthreads>>> (dev_buddha, graph, iteration, dev_states);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		fprintf(stderr, "renderImage launch failed: %s\n", cudaGetErrorString(cudaStatus));
 		goto Error;
 	}
 
@@ -268,7 +373,10 @@ cudaError renderImage(int* buddha, graphic graph, iterationContorol iteration) {
 Error:
 	cudaFree(dev_buddha);
 	cudaFree(dev_states);
+	cudaFree(dev_importance);
 	
+	free(importance);
+
 	return cudaStatus;
 }
 
