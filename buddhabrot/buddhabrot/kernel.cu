@@ -1,3 +1,10 @@
+/*
+To delete "warning C4819"
+1. Open property of buddhabrot project.
+2. Open [CUDA C/C++]/[Command Line].
+3. Write "-Xcompiler -wd4819" in additional options.
+*/
+
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
@@ -78,8 +85,8 @@ __device__ int checkinSecondDisc(complex z) {
 
 __global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationContorol iteration, curandStateMRG32k3a_t* states) {
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
-	int sample_point;
-	complex c, z, z_tmp, z_start;
+	int sample_point, power = 1, lambda = 1;
+	complex c, z, z_tmp, z_start, tortoise;
 
 	for (int i = 0; i < iteration.samples_per_thread; i++) {
 		// Generate sample
@@ -91,6 +98,7 @@ __global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationCon
 		z_start.real = 0; z_start.imag = 0;
 
 		z = z_start;
+		tortoise = z;
 		sample_point = 0;
 
 		if (checkinMainBulb(c) || checkinSecondDisc(c))
@@ -108,6 +116,15 @@ __global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationCon
 				}
 				break;
 			}
+			else if (tortoise.real == z.real && tortoise.imag == z.imag) {
+				break;
+			}
+			else if (power == lambda + 1) {
+				tortoise = z;
+				power *= 2;
+				lambda = 1;
+			}
+			lambda++;
 		}
 
 		// sampling
