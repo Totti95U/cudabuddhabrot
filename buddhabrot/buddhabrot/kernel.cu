@@ -44,9 +44,8 @@ typedef struct {
 	int max_iteration;
 } iterationContorol;
 
-cudaError_t renderImage(int* buddha, graphic graph, iterationContorol iteration);
 
-
+cudaError_t renderImage(int* buddha, const graphic graph, const iterationContorol iteration);
 
 __global__ void initRNG(const unsigned int seed, curandStateMRG32k3a_t* states) {
 	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -81,20 +80,19 @@ __device__ int checkinSecondDisc(complex z) {
 }
 
 __global__ void estImportance(int* importance, graphic graph, iterationContorol iteration) {
-	int index[2] = { (blockIdx.x * blockDim.x) + threadIdx.x, (blockIdx.y * blockDim.y) + threadIdx.y };
+	int indexx = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int indexy = (blockIdx.y * blockDim.y) + threadIdx.y;
 	int gridnum = 1024;
 	complex c, z_tmp, z;
-	if (index[1] == 0 && index[2] == 0)
-		printf("%d", gridnum);
 
 	// Initiarize complex num c , z and int importance.
-	c.real = -3.0 + 6.0 * index[1] / gridnum;
-	c.imag = -3.0 + 6.0 * index[2] / gridnum;
+	c.real = -3.0 + 6.0 * indexx / gridnum;
+	c.imag = -3.0 + 6.0 * indexy / gridnum;
 	z.real = 0.0; z.imag = 0.0;
-	importance[index[1] + index[2] * gridnum] = 0;
+	importance[indexx + indexy * gridnum] = 0;
 
 	if (checkinMainBulb(c) || checkinSecondDisc(c)) {
-		importance[index[1] + index[2] * gridnum] = 0;
+		importance[indexx + indexy * gridnum] = 0;
 		return;
 	}
 	for (int i = 0; i < iteration.max_iteration; i++) {
@@ -105,11 +103,11 @@ __global__ void estImportance(int* importance, graphic graph, iterationContorol 
 			return;
 		}
 		else if (checkinWindow(z, graph)) {
-			importance[index[1] + index[2] * gridnum] = 1;
+			importance[indexx + indexy * gridnum] = 1;
 		}
 	}
 
-	importance[index[1] + index[2] * gridnum] = 0;
+	importance[indexx + indexy * gridnum] = 0;
 
 	return;
 }
@@ -124,13 +122,25 @@ __device__ void draw_point(int* buddha, complex z, const graphic g) {
 	}
 }
 
-__global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationContorol iteration, curandStateMRG32k3a_t* states) {
+__device__ complex curand_withtable(curandStateMRG32k3a_t state, complex* randTable) {
+	complex toReturn;
+	int length = sizeof(randTable) / sizeof(complex*);
+	int t_index = curand(&state) % length;
+	toReturn = randTable[t_index];
+	toReturn.real += (-3 + 6 * curand_uniform(&state)) / 1024;
+	toReturn.imag += (-3 + 6 * curand_uniform(&state)) / 1024;
+
+	return toReturn;
+}
+
+__global__ void computeBuddhabrot(int* buddha, const graphic graph, iterationContorol iteration, curandStateMRG32k3a_t* states, complex* randTable) {
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 	int sample_point, power = 1, lambda = 1;
 	complex c, z, z_tmp, z_start, tortoise;
 
 	for (int i = 0; i < iteration.samples_per_thread; i++) {
 		// Generate sample
+		// c = curand_withtable(states[index], randTable);
 		c.real = -3 + 6*curand_uniform(&states[index]);
 		c.imag = -3 + 6*curand_uniform(&states[index]);
 
@@ -214,26 +224,6 @@ int checkImportance(const int* importance, const int i, const int j, const int g
 	return 0;
 }
 
-complex* makeRandTable(int* importance, const graphic graph, const iterationContorol iteration, const int gridnum) {
-	int sum = 0, rtindex = 0, gridnum = 1024;
-	complex c;
-
-	for (int i = 0; i < gridnum * gridnum; i++) {
-		sum += importance[i];
-	}
-	complex* randTable = (complex*)malloc(sizeof(complex) * sum);
-	for (int i = 0; i < gridnum; i++) {
-		for (int j = 0; j < gridnum; j++) {
-			if (checkImportance(importance, i, j, gridnum)) {
-				c.real = -3 + 6 * j / gridnum;
-				c.imag = -3 + 6 * i / gridnum;
-				randTable[rtindex] = c;
-			}
-		}
-	}
-	return randTable;
-}
-
 int est_min(int* data, unsigned int n) {
 	int length = WIDTH * HEIGHT;
 	int toReturn[10] = { data[0] };
@@ -284,69 +274,106 @@ void saveImage(int* data, graphic g) {
 }
 
 
-cudaError renderImage(int* buddha, graphic graph, iterationContorol iteration) {
-	curandStateMRG32k3a_t* dev_states;
-	int* dev_importance;
+cudaError renderImage(int* buddha, const graphic graph, const iterationContorol iteration) {
+	const int blocks = 256 * 256, threads = 16;
 	int* dev_buddha;
 
 	cudaError_t cudaStatus;
-	
-	const int rtGridnum = 1024;
-	const int blocks = 256*256;
-	const int threads = 16;
-
-	int* importance = (int*)malloc(sizeof(int) * rtGridnum * rtGridnum);
 
 	cudaStatus = cudaSetDevice(0);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?\n");
 		goto Error;
 	}
+
+	// Initiarize random generator.
+	curandStateMRG32k3a_t* dev_states;
+
+	cudaStatus = cudaMalloc((void**)& dev_states, blocks * threads * sizeof(curandStateMRG32k3a_t));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!\n");
+		goto Error;
+	}
+
+	initRNG << <blocks, threads >> > (1222, dev_states);
+
+	//Make random table.
+	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { 1, 1, 1 };
+	int* dev_importance;
+	int rtGridnum = 256;
+
+	cudaStatus = cudaMalloc((void**)& dev_importance, rtGridnum * rtGridnum * sizeof(int));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!\n");
+		goto Error;
+	}
+
+	estImportance <<<rtblocks, rtthreads >>> (dev_importance, graph, iteration);
+
+	// Check for any errors launching the kernel
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "estImportance launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		goto Error;
+	}
+
+	int* importance = (int*)malloc(rtGridnum * rtGridnum * sizeof(int));
+	for (int i = 0; i < rtGridnum * rtGridnum; i++) {
+		importance[i] = 0;
+	}
+
+	cudaStatus = cudaMemcpy(importance, dev_importance, sizeof(int) * rtGridnum * rtGridnum, cudaMemcpyDeviceToHost);
+	cudaFree(dev_importance);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!\n");
+		goto Error;
+	}
+
+	int sum = 0, rtindex = 0;
+	complex c;
+
+	for (int i = 0; i < rtGridnum * rtGridnum; i++) {
+		sum += importance[i];
+	}
+
+	complex* randTable = (complex*)malloc(sizeof(complex) * sum);
+	printf("randTable malloced. (%d bytes)\n", sum);
+
+	for (int i = 0; i < rtGridnum; i++) {
+		for (int j = 0; j < rtGridnum; j++) {
+			if (checkImportance(importance, i, j, rtGridnum)) {
+				c.real = -3 + 6 * j / rtGridnum;
+				c.imag = -3 + 6 * i / rtGridnum;
+				randTable[rtindex] = c;
+			}
+		}
+	}
+
+	free(importance);
+
+	printf("randomTable:");
+	for (int i = 0; i < 3; i++) {
+		printf(" (%f, %f),", randTable[i].real, randTable[i].imag);
+	}
+	printf(" ...\n");
+	
 
 	// Allocate GPU buffers for a vectors (one output).
 	cudaStatus = cudaMalloc((void**)& dev_buddha, WIDTH * HEIGHT * sizeof(int));
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
-	}
-
-	cudaStatus = cudaMalloc((void**)& dev_states, blocks * threads * sizeof(curandStateMRG32k3a_t));
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
-	}
-
-	cudaStatus = cudaMalloc((void**)& dev_importance, sizeof(int) * rtGridnum * rtGridnum);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!");
+		fprintf(stderr, "cudaMalloc failed!\n");
 		goto Error;
 	}
 
 	// Copy input vectors from host memory to GPU buffers.
 	cudaStatus = cudaMemcpy(dev_buddha, buddha, WIDTH * HEIGHT * sizeof(int), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy failed!");
+		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
 	}
-
-	// Initialize random generator.
-	initRNG <<<blocks, threads>>> (1222, dev_states);
-	
-
-	// Make random table.
-	dim3 rtblocks = { 256, 256, 0 }, rtthreads = { 4, 4, 0 };
-
-	estImportance <<<rtblocks, rtthreads >>> (dev_importance, graph, iteration);
-
-	cudaStatus = cudaMemcpy(importance, dev_importance, sizeof(int) * rtGridnum * rtGridnum, cudaMemcpyDeviceToHost);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy failed!");
-		goto Error;
-	}
-	complex* randTable = makeRandTable(importance, graph, iteration, rtGridnum);
 
 	// Compute buddhabrot.
-	computeBuddhabrot <<<rtblocks, rtthreads>>> (dev_buddha, graph, iteration, dev_states);
+	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, graph, iteration, dev_states, randTable);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -359,23 +386,22 @@ cudaError renderImage(int* buddha, graphic graph, iterationContorol iteration) {
 	// any errors encountered during the launch.
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
 		goto Error;
 	}
 	
 	//Copy output vectors from GPU buffers to host memory.
 	cudaStatus = cudaMemcpy(buddha, dev_buddha, WIDTH * HEIGHT * sizeof(int), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy failed!");
+		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
 	}
 
 Error:
-	cudaFree(dev_buddha);
 	cudaFree(dev_states);
-	cudaFree(dev_importance);
-	
-	free(importance);
+	cudaFree(dev_buddha);
+
+	free(randTable);
 
 	return cudaStatus;
 }
@@ -406,9 +432,10 @@ int main()
 	iteration.min_iteration = 1;
 	iteration.max_iteration = 400;
 
+
 	int* buddha = (int*)malloc(sizeof(int) * WIDTH * HEIGHT);
 	if (buddha == NULL) {
-		printf("Memory cannot be allocated.");
+		printf("Memory cannot be allocated.\n");
 		free(buddha);
 		return 1;
 	}
@@ -417,21 +444,20 @@ int main()
 	}
 
 	// compute and render buddhabrot.
-	cudaError_t cudaStatus = renderImage(buddha, g, iteration);
+	cudaError cudaStatus = renderImage(buddha, g, iteration);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "renderImage failed!");
+		fprintf(stderr, "renderImage failed!\n");
 		return 1;
 	}
 
 	// save image of buddhabrot.
-	buddha[1] = 1;
 	saveImage(buddha, g);
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
 	cudaStatus = cudaDeviceReset();
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceReset failed!");
+		fprintf(stderr, "cudaDeviceReset failed!\n");
 		return 1;
 	}
 
