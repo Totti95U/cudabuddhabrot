@@ -45,7 +45,7 @@ typedef struct {
 } iterationContorol;
 
 
-cudaError_t renderImage(int* buddha, const graphic graph, const iterationContorol iteration);
+cudaError_t renderImage(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration);
 
 __global__ void initRNG(const unsigned int seed, curandStateMRG32k3a_t* states) {
 	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -85,8 +85,8 @@ __global__ void estImportance(int* importance, graphic graph, iterationContorol 
 	complex c, z_tmp, z;
 
 	// Initiarize complex num c , z and int importance.
-	c.real = -3.0 + 6.0 * indexx / gridnum;
-	c.imag = -3.0 + 6.0 * indexy / gridnum;
+	c.real = -3.2 + 6.4 * indexx / gridnum;
+	c.imag = -3.2 + 6.4 * indexy / gridnum;
 	z.real = 0.0; z.imag = 0.0;
 	importance[indexx + indexy * gridnum] = 0;
 
@@ -94,24 +94,25 @@ __global__ void estImportance(int* importance, graphic graph, iterationContorol 
 		importance[indexx + indexy * gridnum] = 0;
 		return;
 	}
+
 	for (int i = 0; i < iteration.max_iteration; i++) {
 		z_tmp.real = z.real * z.real - z.imag * z.imag + c.real;
 		z_tmp.imag = 2 * z.real * z.imag + c.imag;
 		z = z_tmp;
-		if (z.real * z.real + z.imag * z.imag > 49.0) {
+		if (z.real * z.real + z.imag * z.imag > 10.0) {
 			return;
 		}
 		else if (i == iteration.max_iteration - 1) {
 			importance[indexx + indexy * gridnum] = 0;
 			return;
 		}
-		else if (checkinWindow(z, graph)) {
+		else if (checkinWindow(z, graph) && i >= iteration.min_iteration) {
 			importance[indexx + indexy * gridnum] = 1;
 		}
 	}
 }
 
-__device__ void draw_point(int* buddha, complex z, const graphic g) {
+__device__ void draw_point(unsigned long long int* buddha, complex z, const graphic g) {
 	int xnum, ynum;
 	if (checkinWindow(z, g)) {
 		xnum = (z.real - g.min_real) / g.dx;
@@ -121,25 +122,25 @@ __device__ void draw_point(int* buddha, complex z, const graphic g) {
 	}
 }
 
-__device__ complex curand_withtable(curandStateMRG32k3a_t state, const complex* randTable, const int length) {
+__device__ complex curand_withtable(curandStateMRG32k3a_t* state, const complex* randTable, const int length, const int num) {
 	complex toReturn;
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 
-	int t_index = curand(&state) % length;
+	int t_index = curand(&state[index]) % length;
 	toReturn = randTable[t_index];
-	toReturn.real += (-3 + 6 * curand_uniform(&state)) / 1024;
-	toReturn.imag += (-3 + 6 * curand_uniform(&state)) / 1024;
+	toReturn.real += (-3.2 + 6.4 * curand_uniform(&state[index])) / 2048;
+	toReturn.imag += (-3.2 + 6.4 * curand_uniform(&state[index])) / 2048;
 	return toReturn;
 }
 
-__global__ void computeBuddhabrot(int* buddha, const graphic graph, const iterationContorol iteration, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
+__global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 	int sample_point, power = 1, lambda = 1;
 	complex c, z, z_tmp, z_start, tortoise;
 
 	for (int i = 0; i < iteration.samples_per_thread; i++) {
 		// Generate sample
-		c = curand_withtable(states[index], randTable, length);
+		c = curand_withtable(states, randTable, length, i);
 
 		// Initialize complex number z and flag sample_point
 		z_start.real = 0; z_start.imag = 0;
@@ -157,8 +158,8 @@ __global__ void computeBuddhabrot(int* buddha, const graphic graph, const iterat
 			z_tmp.imag = 2 * z.real * z.imag + c.imag;
 			z = z_tmp;
 
-			if (z.real * z.real + z.imag * z.imag > 49.0) {
-				if (j > iteration.min_iteration) {
+			if (z.real * z.real + z.imag * z.imag > 10.0) {
+				if (j >= iteration.min_iteration) {
 					sample_point = 1;
 				}
 				break;
@@ -184,7 +185,7 @@ __global__ void computeBuddhabrot(int* buddha, const graphic graph, const iterat
 				z_tmp.imag = 2 * z.real * z.imag + c.imag;
 				z = z_tmp;
 
-				if (z.real * z.real + z.imag * z.imag > 49.0) {
+				if (z.real * z.real + z.imag * z.imag > 10.0) {
 					break;
 				}
 				else{
@@ -220,9 +221,9 @@ int checkImportance(const int* importance, const int i, const int j, const int g
 	return 0;
 }
 
-int est_min(int* data, unsigned int n) {
+unsigned long long int est_min(unsigned long long int* data, unsigned int n) {
 	int length = WIDTH * HEIGHT;
-	int toReturn[10] = { data[0] };
+	unsigned long long int toReturn[10] = { data[0] };
 
 	for (int i = 1; i < length; i++) {
 		for (int j = 0; j < 10; j++) {
@@ -235,9 +236,9 @@ int est_min(int* data, unsigned int n) {
 	return toReturn[n];
 }
 
-int est_max(int* data, unsigned int n) {
+unsigned long long int est_max(unsigned long long int* data, unsigned int n) {
 	int length = WIDTH * HEIGHT;
-	int toReturn = data[0];
+	unsigned long long int toReturn = data[0];
 
 	for (int i = 1; i < length; i++) {
 		if (data[i] > toReturn) {
@@ -247,7 +248,7 @@ int est_max(int* data, unsigned int n) {
 	return toReturn;
 }
 
-void saveImage(int* data, graphic g) {
+void saveImage(unsigned long long int* data, graphic g) {
 	int tmp, min, max;
 	FILE* fp = fopen("../../output.pgm", "wb");
 
@@ -260,7 +261,7 @@ void saveImage(int* data, graphic g) {
 	// Write pixel.
 	for (int i = 0; i < g.h; i++) {
 		for (int j = 0; j < g.w; j++) {
-			tmp = 0xffff * (data[i * g.w + j] - min) / ((double)max);
+			tmp = 0xffff * sqrt((data[i * g.w + j] - min) / ((double)max));
 			fprintf(fp, "%d ", tmp);
 		}
 		fprintf(fp, "\n");
@@ -270,9 +271,9 @@ void saveImage(int* data, graphic g) {
 }
 
 
-cudaError renderImage(int* buddha, const graphic graph, const iterationContorol iteration) {
+cudaError renderImage(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration) {
 	const int blocks = 256 * 256, threads = 16;
-	int* dev_buddha;
+	unsigned long long int* dev_buddha;
 	complex* dev_randTable;
 
 	cudaError_t cudaStatus;
@@ -295,7 +296,7 @@ cudaError renderImage(int* buddha, const graphic graph, const iterationContorol 
 	initRNG << <blocks, threads >> > (1222, dev_states);
 
 	//Make random table.
-	int rtGridnum = 1024;
+	int rtGridnum = 2048;
 	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { rtGridnum/rtblocks.x, rtGridnum / rtblocks.y, 1 };
 	int* dev_importance;
 
@@ -342,8 +343,8 @@ cudaError renderImage(int* buddha, const graphic graph, const iterationContorol 
 	for (int i = 0; i < rtGridnum; i++) {
 		for (int j = 0; j < rtGridnum; j++) {
 			if (checkImportance(importance, i, j, rtGridnum)) {
-				c.real = -3.0 + 6.0 * i / rtGridnum;
-				c.imag = -3.0 + 6.0 * j / rtGridnum;
+				c.real = -3.2 + 6.4 * i / rtGridnum;
+				c.imag = -3.2 + 6.4 * j / rtGridnum;
 				randTable[rtindex] = c;
 				rtindex++;
 			}
@@ -353,7 +354,7 @@ cudaError renderImage(int* buddha, const graphic graph, const iterationContorol 
 	free(importance);
 
 	// Allocate GPU buffers for a vectors (one output).
-	cudaStatus = cudaMalloc((void**)& dev_buddha, WIDTH * HEIGHT * sizeof(int));
+	cudaStatus = cudaMalloc((void**)& dev_buddha, WIDTH * HEIGHT * sizeof(unsigned long long int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!\n");
 		goto Error;
@@ -366,7 +367,7 @@ cudaError renderImage(int* buddha, const graphic graph, const iterationContorol 
 	}
 
 	// Copy input vectors from host memory to GPU buffers.
-	cudaStatus = cudaMemcpy(dev_buddha, buddha, WIDTH * HEIGHT * sizeof(int), cudaMemcpyHostToDevice);
+	cudaStatus = cudaMemcpy(dev_buddha, buddha, WIDTH * HEIGHT * sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
@@ -397,7 +398,7 @@ cudaError renderImage(int* buddha, const graphic graph, const iterationContorol 
 	}
 	
 	//Copy output vectors from GPU buffers to host memory.
-	cudaStatus = cudaMemcpy(buddha, dev_buddha, WIDTH * HEIGHT * sizeof(int), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(buddha, dev_buddha, WIDTH * HEIGHT * sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
@@ -418,10 +419,10 @@ Error:
 int main()
 {
 	complex center;
-	center.real = -0.5;
-	center.imag = 0.0;
+	center.real = -0.15943359375; // -0.5;
+	center.imag = 1.034150390625; // 0.0;
 
-	float size = 2.6;
+	double size = 0.03125; // 2.6;
 
 	graphic g;
 	g.w = WIDTH;
@@ -435,12 +436,12 @@ int main()
 	g.min_imag = center.imag - 0.5 * size;
 
 	iterationContorol iteration;
-	iteration.samples_per_thread = 1; // 100
-	iteration.min_iteration = 1;
-	iteration.max_iteration = 400;
+	iteration.samples_per_thread = 128;
+	iteration.min_iteration = 0;
+	iteration.max_iteration = 1000;
 
 
-	int* buddha = (int*)malloc(sizeof(int) * WIDTH * HEIGHT);
+	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * WIDTH * HEIGHT);
 	if (buddha == NULL) {
 		printf("Memory cannot be allocated.\n");
 		free(buddha);
