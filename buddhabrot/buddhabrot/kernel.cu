@@ -17,7 +17,7 @@ To delete "warning C4819"
 
 #define WIDTH 1280
 #define HEIGHT 720
-
+#define RTGRIDNUM 2048
 
 typedef struct {
 	int w;
@@ -46,6 +46,13 @@ typedef struct {
 
 
 cudaError_t renderImage(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration);
+
+__device__ complex f(complex z, complex c) {
+	complex toReturn;
+	toReturn.real = z.real * z.real - z.imag * z.imag + c.real;
+	toReturn.imag = 2 * z.real * z.imag + c.imag;
+	return toReturn;
+}
 
 __global__ void initRNG(const unsigned int seed, curandStateMRG32k3a_t* states) {
 	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -79,35 +86,34 @@ __device__ int checkinSecondDisc(complex z) {
 	}
 }
 
-__global__ void estImportance(int* importance, graphic graph, iterationContorol iteration, const int gridnum) {
+__global__ void estImportance(int* importance, graphic graph, iterationContorol iteration) {
 	int indexx = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int indexy = (blockIdx.y * blockDim.y) + threadIdx.y;
-	complex c, z_tmp, z;
+	complex c, z;
 
 	// Initiarize complex num c , z and int importance.
-	c.real = -3.2 + 6.4 * indexx / gridnum;
-	c.imag = -3.2 + 6.4 * indexy / gridnum;
+	c.real = -3.2 + 6.4 * indexx / RTGRIDNUM;
+	c.imag = -3.2 + 6.4 * indexy / RTGRIDNUM;
 	z.real = 0.0; z.imag = 0.0;
-	importance[indexx + indexy * gridnum] = 0;
-
+	importance[indexx + indexy * RTGRIDNUM] = 0;
+	/*
 	if (checkinMainBulb(c) || checkinSecondDisc(c)) {
-		importance[indexx + indexy * gridnum] = 0;
+	 	importance[indexx + indexy * RTGRIDNUM] = 0;
 		return;
 	}
+	*/
 
 	for (int i = 0; i < iteration.max_iteration; i++) {
-		z_tmp.real = z.real * z.real - z.imag * z.imag + c.real;
-		z_tmp.imag = 2 * z.real * z.imag + c.imag;
-		z = z_tmp;
+		z = f(z, c);
 		if (z.real * z.real + z.imag * z.imag > 10.0) {
 			return;
 		}
 		else if (i == iteration.max_iteration - 1) {
-			importance[indexx + indexy * gridnum] = 0;
+			importance[indexx + indexy * RTGRIDNUM] = 0;
 			return;
 		}
 		else if (checkinWindow(z, graph) && i >= iteration.min_iteration) {
-			importance[indexx + indexy * gridnum] = 1;
+			importance[indexx + indexy * RTGRIDNUM] = 1;
 		}
 	}
 }
@@ -116,31 +122,31 @@ __device__ void draw_point(unsigned long long int* buddha, complex z, const grap
 	int xnum, ynum;
 	if (checkinWindow(z, g)) {
 		xnum = (z.real - g.min_real) / g.dx;
-		ynum = (z.imag - g.min_imag) / g.dy;
+		ynum = g.h - (z.imag - g.min_imag) / g.dy;
 
 		buddha[xnum + ynum * g.w] += 1;
 	}
 }
 
-__device__ complex curand_withtable(curandStateMRG32k3a_t* state, const complex* randTable, const int length, const int num) {
+__device__ complex curand_withtable(curandStateMRG32k3a_t* state, const complex* randTable, const int length) {
 	complex toReturn;
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 
 	int t_index = curand(&state[index]) % length;
 	toReturn = randTable[t_index];
-	toReturn.real += (-3.2 + 6.4 * curand_uniform(&state[index])) / 2048;
-	toReturn.imag += (-3.2 + 6.4 * curand_uniform(&state[index])) / 2048;
+	toReturn.real += (-3.2 + 6.4 * curand_uniform(&state[index])) / RTGRIDNUM;
+	toReturn.imag += (-3.2 + 6.4 * curand_uniform(&state[index])) / RTGRIDNUM;
 	return toReturn;
 }
 
 __global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 	int sample_point, power = 1, lambda = 1;
-	complex c, z, z_tmp, z_start, tortoise;
+	complex c, z, z_start, tortoise;
 
 	for (int i = 0; i < iteration.samples_per_thread; i++) {
 		// Generate sample
-		c = curand_withtable(states, randTable, length, i);
+		c = curand_withtable(states, randTable, length);
 
 		// Initialize complex number z and flag sample_point
 		z_start.real = 0; z_start.imag = 0;
@@ -149,14 +155,14 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic 
 		tortoise = z;
 		sample_point = 0;
 
+		/*
 		if (checkinMainBulb(c) || checkinSecondDisc(c))
 			continue;
+		*/
 
 		// Judge whether a point z is escape.
 		for (int j = 0; j < iteration.max_iteration; j++) {
-			z_tmp.real = z.real * z.real - z.imag * z.imag + c.real;
-			z_tmp.imag = 2 * z.real * z.imag + c.imag;
-			z = z_tmp;
+			z = f(z, c);
 
 			if (z.real * z.real + z.imag * z.imag > 10.0) {
 				if (j >= iteration.min_iteration) {
@@ -181,9 +187,7 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic 
 			z = z_start;
 
 			for (int j = 0; j < iteration.max_iteration; j++) {
-				z_tmp.real = (z.real * z.real - z.imag * z.imag) + c.real;
-				z_tmp.imag = 2 * z.real * z.imag + c.imag;
-				z = z_tmp;
+				z = f(z, c);
 
 				if (z.real * z.real + z.imag * z.imag > 10.0) {
 					break;
@@ -198,25 +202,13 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic 
 
 
 
-int checkImportance(const int* importance, const int i, const int j, const int gridnum) {
-	if (importance[i + j*gridnum])
-		return 1;
-
-	else if (i > 0) {
-		if (importance[i - 1 + j * gridnum])
-			return 1;
-	}
-	else if (i < gridnum) {
-		if (importance[i + 1 + j * gridnum])
-			return 1;
-	}
-	else if (j > 0) {
-		if (importance[i + (j - 1) * gridnum])
-			return 1;
-	}
-	else if (j < gridnum) {
-		if (importance[i + (j + 1) * gridnum])
-			return 1;
+int checkImportance(const int* importance, const int i, const int j) {
+	for (int dx = -1; dx < 2; dx++) {
+		for (int dy = -1; dy < 2; dy++) {
+			if (-1 < dx + i && dx + i < RTGRIDNUM && -1 < dy + j && dy + j < RTGRIDNUM && importance[(i + dx) + RTGRIDNUM * (j + dy)]) {
+				return 1;
+			}
+		}
 	}
 	return 0;
 }
@@ -253,7 +245,7 @@ void saveImage(unsigned long long int* data, graphic g) {
 	FILE* fp = fopen("../../output.pgm", "wb");
 
 	// Write header.
-	fprintf(fp, "P2\n%d %d\n%d\n", g.w, g.h, 0xffff);
+	fprintf(fp, "P5\n%d %d\n%d\n", g.w, g.h, 0xff);
 
 	min = est_min(data, 1);
 	max = est_max(data, 1);
@@ -261,10 +253,9 @@ void saveImage(unsigned long long int* data, graphic g) {
 	// Write pixel.
 	for (int i = 0; i < g.h; i++) {
 		for (int j = 0; j < g.w; j++) {
-			tmp = 0xffff * sqrt((data[i * g.w + j] - min) / ((double)max));
-			fprintf(fp, "%d ", tmp);
+			tmp = 0xff * sqrt((data[i * g.w + j] - min) / ((double)max));
+			putc(tmp, fp);
 		}
-		fprintf(fp, "\n");
 	}
 	 
 	fclose(fp);
@@ -296,17 +287,16 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	initRNG << <blocks, threads >> > (1222, dev_states);
 
 	//Make random table.
-	int rtGridnum = 2048;
-	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { rtGridnum/rtblocks.x, rtGridnum / rtblocks.y, 1 };
+	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { RTGRIDNUM / rtblocks.x, RTGRIDNUM / rtblocks.y, 1 };
 	int* dev_importance;
 
-	cudaStatus = cudaMalloc((void**)& dev_importance, rtGridnum * rtGridnum * sizeof(int));
+	cudaStatus = cudaMalloc((void**)& dev_importance, RTGRIDNUM * RTGRIDNUM * sizeof(int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!\n");
 		goto Error;
 	}
 
-	estImportance <<<rtblocks, rtthreads >>> (dev_importance, graph, iteration, rtGridnum);
+	estImportance <<<rtblocks, rtthreads >>> (dev_importance, graph, iteration);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -315,12 +305,12 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 		goto Error;
 	}
 
-	int* importance = (int*)malloc(rtGridnum * rtGridnum * sizeof(int));
-	for (int i = 0; i < rtGridnum * rtGridnum; i++) {
+	int* importance = (int*)malloc(RTGRIDNUM * RTGRIDNUM * sizeof(int));
+	for (int i = 0; i < RTGRIDNUM * RTGRIDNUM; i++) {
 		importance[i] = 0;
 	}
 
-	cudaStatus = cudaMemcpy(importance, dev_importance, sizeof(int) * rtGridnum * rtGridnum, cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(importance, dev_importance, sizeof(int) * RTGRIDNUM * RTGRIDNUM, cudaMemcpyDeviceToHost);
 	cudaFree(dev_importance);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!\n");
@@ -330,9 +320,9 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	int sum = 0, rtindex = 0;
 	complex c;
 
-	for (int i = 0; i < rtGridnum; i++) {
-		for (int j = 0; j < rtGridnum; j++) {
-			if (checkImportance(importance, i, j, rtGridnum))
+	for (int i = 0; i < RTGRIDNUM; i++) {
+		for (int j = 0; j < RTGRIDNUM; j++) {
+			if (checkImportance(importance, i, j))
 				sum++;
 		}
 	}
@@ -340,11 +330,11 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	complex* randTable = (complex*)malloc(sizeof(complex) * sum);
 	printf("randTable malloced. (length: %d)\n", sum);
 
-	for (int i = 0; i < rtGridnum; i++) {
-		for (int j = 0; j < rtGridnum; j++) {
-			if (checkImportance(importance, i, j, rtGridnum)) {
-				c.real = -3.2 + 6.4 * i / rtGridnum;
-				c.imag = -3.2 + 6.4 * j / rtGridnum;
+	for (int i = 0; i < RTGRIDNUM; i++) {
+		for (int j = 0; j < RTGRIDNUM; j++) {
+			if (checkImportance(importance, i, j)) {
+				c.real = -3.2 + 6.4 * i / RTGRIDNUM;
+				c.imag = -3.2 + 6.4 * j / RTGRIDNUM;
 				randTable[rtindex] = c;
 				rtindex++;
 			}
@@ -419,10 +409,10 @@ Error:
 int main()
 {
 	complex center;
-	center.real = -0.15943359375; // -0.5;
-	center.imag = 1.034150390625; // 0.0;
+	center.real = -0.5; // -0.15943359375;
+	center.imag = 0.0; // 1.034150390625;
 
-	double size = 0.03125; // 2.6;
+	double size = 2.6;// 0.03125;// 2.6;
 
 	graphic g;
 	g.w = WIDTH;
@@ -436,9 +426,9 @@ int main()
 	g.min_imag = center.imag - 0.5 * size;
 
 	iterationContorol iteration;
-	iteration.samples_per_thread = 128;
+	iteration.samples_per_thread = 256;
 	iteration.min_iteration = 0;
-	iteration.max_iteration = 1000;
+	iteration.max_iteration = 20;
 
 
 	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * WIDTH * HEIGHT);
