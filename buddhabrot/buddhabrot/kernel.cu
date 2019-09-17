@@ -14,10 +14,13 @@ To delete "warning C4819"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 
 #define WIDTH 1280
 #define HEIGHT 720
 #define RTGRIDNUM 2048
+
+clock_t start_t, subend_t;
 
 typedef struct {
 	int w;
@@ -96,12 +99,11 @@ __global__ void estImportance(int* importance, graphic graph, iterationContorol 
 	c.imag = -3.2 + 6.4 * indexy / RTGRIDNUM;
 	z.real = 0.0; z.imag = 0.0;
 	importance[indexx + indexy * RTGRIDNUM] = 0;
-	/*
+
 	if (checkinMainBulb(c) || checkinSecondDisc(c)) {
 	 	importance[indexx + indexy * RTGRIDNUM] = 0;
 		return;
 	}
-	*/
 
 	for (int i = 0; i < iteration.max_iteration; i++) {
 		z = f(z, c);
@@ -155,10 +157,8 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic 
 		tortoise = z;
 		sample_point = 0;
 
-		/*
 		if (checkinMainBulb(c) || checkinSecondDisc(c))
 			continue;
-		*/
 
 		// Judge whether a point z is escape.
 		for (int j = 0; j < iteration.max_iteration; j++) {
@@ -284,7 +284,9 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 		goto Error;
 	}
 
-	initRNG << <blocks, threads >> > (1222, dev_states);
+	initRNG <<<blocks, threads >>> (1222, dev_states);
+	subend_t = clock();
+	printf("Initirizing has done. (%.2f)\n", (double)(subend_t - start_t)/CLOCKS_PER_SEC);
 
 	//Make random table.
 	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { RTGRIDNUM / rtblocks.x, RTGRIDNUM / rtblocks.y, 1 };
@@ -297,6 +299,8 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	}
 
 	estImportance <<<rtblocks, rtthreads >>> (dev_importance, graph, iteration);
+	subend_t = clock();
+	printf("Esting importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -317,6 +321,7 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 		goto Error;
 	}
 
+
 	int sum = 0, rtindex = 0;
 	complex c;
 
@@ -328,7 +333,6 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	}
 
 	complex* randTable = (complex*)malloc(sizeof(complex) * sum);
-	printf("randTable malloced. (length: %d)\n", sum);
 
 	for (int i = 0; i < RTGRIDNUM; i++) {
 		for (int j = 0; j < RTGRIDNUM; j++) {
@@ -340,6 +344,8 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 			}
 		}
 	}
+	subend_t = clock();
+	printf("Makin random table has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	free(importance);
 
@@ -371,6 +377,8 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 
 	// Compute buddhabrot.
 	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, graph, iteration, dev_states, dev_randTable, sum);
+	subend_t = clock();
+	printf("Computing buddhabrot has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -386,6 +394,8 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
 		goto Error;
 	}
+	subend_t = clock();
+	printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 	
 	//Copy output vectors from GPU buffers to host memory.
 	cudaStatus = cudaMemcpy(buddha, dev_buddha, WIDTH * HEIGHT * sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
@@ -393,6 +403,8 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
 	}
+	subend_t = clock();
+	printf("cudaMencpy from dev_buddha to buddha has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 Error:
 	cudaFree(dev_states);
@@ -427,8 +439,8 @@ int main()
 
 	iterationContorol iteration;
 	iteration.samples_per_thread = 256;
-	iteration.min_iteration = 0;
-	iteration.max_iteration = 20;
+	iteration.min_iteration = 2000;
+	iteration.max_iteration = 100000;
 
 
 	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * WIDTH * HEIGHT);
@@ -441,6 +453,8 @@ int main()
 		buddha[i] = 0;
 	}
 
+	start_t = clock();
+
 	// compute and render buddhabrot.
 	cudaError cudaStatus = renderImage(buddha, g, iteration);
 	if (cudaStatus != cudaSuccess) {
@@ -450,6 +464,8 @@ int main()
 
 	// save image of buddhabrot.
 	saveImage(buddha, g);
+	subend_t = clock();
+	printf("Saving image has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
