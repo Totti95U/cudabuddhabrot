@@ -20,11 +20,6 @@ To delete "warning C4819"
 #define HEIGHT 720
 #define RTGRIDNUM 2048
 
-clock_t start_t, subend_t;
-
-graphic g;
-iterationContorol iteration;
-
 typedef struct {
 	float real;
 	float imag;
@@ -52,6 +47,10 @@ typedef struct {
 	int max_iteration;
 } iterationContorol;
 
+clock_t start_t, subend_t;
+
+graphic g;
+iterationContorol iteration;
 
 cudaError_t renderImage(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration);
 
@@ -421,7 +420,7 @@ Error:
 	return cudaStatus;
 }
 
-void set_param(graphic g, iterationContorol iteration, int argc, char** argv) {
+void set_param(int argc, char** argv) {
 	// Subsitute to parameters.
 	if (argc > 1) {
 		for (int i = 1; i < argc; i+=2) {
@@ -480,9 +479,11 @@ int main(int argc, char** argv)
 	iteration.min_iteration = 0;
 	iteration.max_iteration = 1000;
 
-	set_param(g, iteration, argc, argv);
+	set_param(argc, argv);
 
-	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * g.w * HEIGHT);
+	printf("%f", g.ratio);
+
+	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * g.w * g.h);
 	if (buddha == NULL) {
 		printf("Memory cannot be allocated.\n");
 		free(buddha);
