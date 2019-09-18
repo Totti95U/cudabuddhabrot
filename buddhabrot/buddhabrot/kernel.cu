@@ -22,6 +22,14 @@ To delete "warning C4819"
 
 clock_t start_t, subend_t;
 
+graphic g;
+iterationContorol iteration;
+
+typedef struct {
+	float real;
+	float imag;
+} complex;
+
 typedef struct {
 	int w;
 	int h;
@@ -30,16 +38,13 @@ typedef struct {
 	double dx;
 	double dy;
 
+	complex center;
+	double size;
 	double max_real;
 	double min_real;
 	double max_imag;
 	double min_imag;
 } graphic;
-
-typedef struct {
-	float real;
-	float imag;
-} complex;
 
 typedef struct {
 	int samples_per_thread;
@@ -214,7 +219,7 @@ int checkImportance(const int* importance, const int i, const int j) {
 }
 
 unsigned long long int est_min(unsigned long long int* data, unsigned int n) {
-	int length = WIDTH * HEIGHT;
+	int length = g.w * g.h;
 	unsigned long long int toReturn[10] = { data[0] };
 
 	for (int i = 1; i < length; i++) {
@@ -229,7 +234,7 @@ unsigned long long int est_min(unsigned long long int* data, unsigned int n) {
 }
 
 unsigned long long int est_max(unsigned long long int* data, unsigned int n) {
-	int length = WIDTH * HEIGHT;
+	int length = g.w * g.h;
 	unsigned long long int toReturn = data[0];
 
 	for (int i = 1; i < length; i++) {
@@ -350,7 +355,7 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	free(importance);
 
 	// Allocate GPU buffers for a vectors (one output).
-	cudaStatus = cudaMalloc((void**)& dev_buddha, WIDTH * HEIGHT * sizeof(unsigned long long int));
+	cudaStatus = cudaMalloc((void**)& dev_buddha, g.w * g.h * sizeof(unsigned long long int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!\n");
 		goto Error;
@@ -363,7 +368,7 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	}
 
 	// Copy input vectors from host memory to GPU buffers.
-	cudaStatus = cudaMemcpy(dev_buddha, buddha, WIDTH * HEIGHT * sizeof(unsigned long long int), cudaMemcpyHostToDevice);
+	cudaStatus = cudaMemcpy(dev_buddha, buddha, g.w * g.h * sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
@@ -398,7 +403,7 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 	
 	//Copy output vectors from GPU buffers to host memory.
-	cudaStatus = cudaMemcpy(buddha, dev_buddha, WIDTH * HEIGHT * sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(buddha, dev_buddha, g.w * g.h * sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
@@ -416,40 +421,74 @@ Error:
 	return cudaStatus;
 }
 
+void set_param(graphic g, iterationContorol iteration, int argc, char** argv) {
+	// Subsitute to parameters.
+	if (argc > 1) {
+		for (int i = 1; i < argc; i+=2) {
+			if (argv[i][1] == *"w") {
+				g.w = strtol(argv[i+1], NULL, 10);
+			}
+			else if (argv[i][1] == *"h") {
+				g.h = strtol(argv[i+1], NULL, 10);
+			}
+			else if (argv[i][1] == *"cr") {
+				g.center.real = strtod(argv[i + 1], NULL);
+			}
+			else if (argv[i][1] == *"ci") {
+				g.center.imag = strtod(argv[i + 1], NULL);
+			}
+			else if (argv[i][1] == *"s") {
+				g.size = strtod(argv[i + 1], NULL);
+			}
+			else if (argv[i][1] == *"max") {
+				iteration.max_iteration = strtol(argv[i + 1], NULL, 10);
+			}
+			else if (argv[i][1] == *"min") {
+				iteration.min_iteration = strtol(argv[i + 1], NULL, 10);
+			}
+			else if (argv[i][1] == *"per") {
+				iteration.samples_per_thread = strtol(argv[i + 1], NULL, 10);
+			}
+			else{
+				fprintf(stderr, "Invalid options !");
+				exit(1);
+			}
+		}
+	}
+
+	// Compute
+	g.ratio = ((double)g.w) / g.h;
+	g.dx = g.size / g.h;
+	g.dy = g.size / g.h;
+	g.max_real = g.center.real + 0.5 * g.size * g.ratio;
+	g.max_imag = g.center.imag + 0.5 * g.size;
+	g.min_real = g.center.real - 0.5 * g.size * g.ratio;
+	g.min_imag = g.center.imag - 0.5 * g.size;
+}
 
 
-int main()
+int main(int argc, char** argv)
 {
-	complex center;
-	center.real = -0.5; // -0.15943359375;
-	center.imag = 0.0; // 1.034150390625;
-
-	double size = 2.6;// 0.03125;// 2.6;
-
-	graphic g;
+	// Default value.
 	g.w = WIDTH;
 	g.h = HEIGHT;
-	g.ratio = ((double)WIDTH) / HEIGHT;
-	g.dx = size / g.h;
-	g.dy = size / g.h;
-	g.max_real = center.real + 0.5 * size * g.ratio;
-	g.max_imag = center.imag + 0.5 * size;
-	g.min_real = center.real - 0.5 * size * g.ratio;
-	g.min_imag = center.imag - 0.5 * size;
+	g.center.real = -0.5; // -0.15943359375;
+	g.center.imag = 0.0; // 1.034150390625;
+	g.size = 2.6;// 0.03125;
 
-	iterationContorol iteration;
-	iteration.samples_per_thread = 256;
-	iteration.min_iteration = 2000;
-	iteration.max_iteration = 100000;
+	iteration.samples_per_thread = 32;
+	iteration.min_iteration = 0;
+	iteration.max_iteration = 1000;
 
+	set_param(g, iteration, argc, argv);
 
-	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * WIDTH * HEIGHT);
+	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * g.w * HEIGHT);
 	if (buddha == NULL) {
 		printf("Memory cannot be allocated.\n");
 		free(buddha);
 		return 1;
 	}
-	for (int i = 0; i < WIDTH * HEIGHT; i++) {
+	for (int i = 0; i < g.w * g.h; i++) {
 		buddha[i] = 0;
 	}
 
