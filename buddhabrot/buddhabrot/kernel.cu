@@ -39,6 +39,8 @@ typedef struct {
 	double min_real;
 	double max_imag;
 	double min_imag;
+
+	double gamma;
 } graphic;
 
 typedef struct {
@@ -257,7 +259,7 @@ void saveImage(unsigned long long int* data, graphic g) {
 	// Write pixel.
 	for (int i = 0; i < g.h; i++) {
 		for (int j = 0; j < g.w; j++) {
-			tmp = 0xff * sqrt((data[i * g.w + j] - min) / ((double)max));
+			tmp = 0xff * pow((data[i * g.w + j] - min) / ((double)max), 1/g.gamma);
 			putc(tmp, fp);
 		}
 	}
@@ -423,35 +425,38 @@ Error:
 void set_param(int argc, char** argv) {
 	// Subsitute to parameters.
 	if (argc > 1) {
-		for (int i = 1; i < argc; i+=2) {
-			if (argv[i][1] == *"w") {
-				g.w = strtol(argv[i+1], NULL, 10);
+		for (int i = 1; i < argc;) {
+			if (strcmp(argv[i], "-w") == 0) {
+				g.w = strtol(argv[i], NULL, 10);
+				
 			}
-			else if (argv[i][1] == *"h") {
-				g.h = strtol(argv[i+1], NULL, 10);
+			else if (strcmp(argv[i], "-h") == 0) {
+				g.h = strtol(argv[++i], NULL, 10);
 			}
-			else if (argv[i][1] == *"cr") {
-				g.center.real = strtod(argv[i + 1], NULL);
+			else if (strcmp(argv[i], "-c") == 0) {
+				g.center.real = strtod(argv[++i], NULL);
+				g.center.imag = strtod(argv[++i], NULL);
 			}
-			else if (argv[i][1] == *"ci") {
-				g.center.imag = strtod(argv[i + 1], NULL);
+			else if (strcmp(argv[i], "-s") == 0) {
+				g.size = strtod(argv[++i], NULL);
 			}
-			else if (argv[i][1] == *"s") {
-				g.size = strtod(argv[i + 1], NULL);
+			else if (strcmp(argv[i], "-g") == 0) {
+				g.gamma = strtod(argv[++i], NULL);
 			}
-			else if (argv[i][1] == *"max") {
-				iteration.max_iteration = strtol(argv[i + 1], NULL, 10);
+			else if (strcmp(argv[i], "-max") == 0) {
+				iteration.max_iteration = strtol(argv[++i], NULL, 10);
 			}
-			else if (argv[i][1] == *"min") {
-				iteration.min_iteration = strtol(argv[i + 1], NULL, 10);
+			else if (strcmp(argv[i], "-min") == 0) {
+				iteration.min_iteration = strtol(argv[++i], NULL, 10);
 			}
-			else if (argv[i][1] == *"per") {
-				iteration.samples_per_thread = strtol(argv[i + 1], NULL, 10);
+			else if (strcmp(argv[i], "-sample") == 0) {
+				iteration.samples_per_thread = strtol(argv[++i], NULL, 10);
 			}
-			else{
+			else {
 				fprintf(stderr, "Invalid options !");
 				exit(1);
 			}
+			i++;
 		}
 	}
 
@@ -465,7 +470,6 @@ void set_param(int argc, char** argv) {
 	g.min_imag = g.center.imag - 0.5 * g.size;
 }
 
-
 int main(int argc, char** argv)
 {
 	// Default value.
@@ -474,14 +478,13 @@ int main(int argc, char** argv)
 	g.center.real = -0.5; // -0.15943359375;
 	g.center.imag = 0.0; // 1.034150390625;
 	g.size = 2.6;// 0.03125;
+	g.gamma = 1.0;
 
 	iteration.samples_per_thread = 32;
 	iteration.min_iteration = 0;
 	iteration.max_iteration = 1000;
 
 	set_param(argc, argv);
-
-	printf("%f", g.ratio);
 
 	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * g.w * g.h);
 	if (buddha == NULL) {
