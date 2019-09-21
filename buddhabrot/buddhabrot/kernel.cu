@@ -18,7 +18,7 @@ To delete "warning C4819"
 
 #define WIDTH 1280
 #define HEIGHT 720
-#define RTGRIDNUM 2048
+#define RTGRIDNUM 1024
 
 typedef struct {
 	float real;
@@ -30,15 +30,15 @@ typedef struct {
 	int h;
 	double ratio;
 
-	double dx;
-	double dy;
+	float dx;
+	float dy;
 
 	complex center;
-	double size;
-	double max_real;
-	double min_real;
-	double max_imag;
-	double min_imag;
+	float size;
+	float max_real;
+	float min_real;
+	float max_imag;
+	float min_imag;
 
 	double gamma;
 } graphic;
@@ -54,7 +54,7 @@ clock_t start_t, subend_t;
 graphic g;
 iterationContorol iteration;
 
-cudaError_t renderImage(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration);
+cudaError_t renderImage(unsigned long long int* buddha);
 
 __device__ complex f(complex z, complex c) {
 	complex toReturn;
@@ -65,20 +65,24 @@ __device__ complex f(complex z, complex c) {
 
 __global__ void initRNG(const unsigned int seed, curandStateMRG32k3a_t* states) {
 	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-	curand_init(seed, index, 0, states + index);
+	// standard initirized
+	// curand_init(seed, index, 0, &states[index]);
+
+	//fast initirized
+	curand_init((seed << 20) + index, 0, 0, &states[index]);
 }
 
-__device__ int checkinWindow(complex z, graphic graph) {
-	if (graph.min_real < z.real && z.real < graph.max_real &&
-		graph.min_imag < z.imag && z.imag < graph.max_imag) {
+__device__ int checkinWindow(complex z, graphic g) {
+	if (g.min_real < z.real && z.real < g.max_real &&
+		g.min_imag < z.imag && z.imag < g.max_imag) {
 		return 1;
 	}
 	return 0;
 }
 
 __device__ int checkinMainBulb(complex z) {
-	float q = (z.real - 1.0 / 4.0) * (z.real - 1.0 / 4.0) + z.imag * z.imag;
-	if (q * (q + (z.real - 1.0 / 4.0)) < (z.imag * z.imag) / 4.0) {
+	float q = (z.real - 1.0f / 4.0f) * (z.real - 1.0f / 4.0f) + z.imag * z.imag;
+	if (q * (q + (z.real - 1.0f / 4.0f)) < (z.imag * z.imag) / 4.0f) {
 		return 1;
 	}
 	else {
@@ -87,7 +91,7 @@ __device__ int checkinMainBulb(complex z) {
 }
 
 __device__ int checkinSecondDisc(complex z) {
-	if ((z.real + 1) * (z.real + 1) + z.imag * z.imag < 0.25 * 0.25) {
+	if ((z.real + 1) * (z.real + 1) + z.imag * z.imag < 0.25f * 0.25f) {
 		return 1;
 	}
 	else {
@@ -95,15 +99,15 @@ __device__ int checkinSecondDisc(complex z) {
 	}
 }
 
-__global__ void estImportance(int* importance, graphic graph, iterationContorol iteration) {
+__global__ void estImportance(int* importance, graphic g, iterationContorol iteration) {
 	int indexx = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int indexy = (blockIdx.y * blockDim.y) + threadIdx.y;
 	complex c, z;
 
 	// Initiarize complex num c , z and int importance.
-	c.real = -3.2 + 6.4 * indexx / RTGRIDNUM;
-	c.imag = -3.2 + 6.4 * indexy / RTGRIDNUM;
-	z.real = 0.0; z.imag = 0.0;
+	c.real = -3.2f + 6.4f * indexx / RTGRIDNUM;
+	c.imag = -3.2f + 6.4f * indexy / RTGRIDNUM;
+	z.real = 0.0f; z.imag = 0.0f;
 	importance[indexx + indexy * RTGRIDNUM] = 0;
 
 	if (checkinMainBulb(c) || checkinSecondDisc(c)) {
@@ -113,20 +117,20 @@ __global__ void estImportance(int* importance, graphic graph, iterationContorol 
 
 	for (int i = 0; i < iteration.max_iteration; i++) {
 		z = f(z, c);
-		if (z.real * z.real + z.imag * z.imag > 10.0) {
+		if (z.real * z.real + z.imag * z.imag > 10.0f) {
 			return;
 		}
 		else if (i == iteration.max_iteration - 1) {
 			importance[indexx + indexy * RTGRIDNUM] = 0;
 			return;
 		}
-		else if (checkinWindow(z, graph) && i >= iteration.min_iteration) {
+		else if (checkinWindow(z, g) && i >= iteration.min_iteration) {
 			importance[indexx + indexy * RTGRIDNUM] = 1;
 		}
 	}
 }
 
-__device__ void draw_point(unsigned long long int* buddha, complex z, const graphic g) {
+__device__ void draw_point(unsigned long long int* buddha, complex z, graphic g) {
 	int xnum, ynum;
 	if (checkinWindow(z, g)) {
 		xnum = (z.real - g.min_real) / g.dx;
@@ -142,12 +146,12 @@ __device__ complex curand_withtable(curandStateMRG32k3a_t* state, const complex*
 
 	int t_index = curand(&state[index]) % length;
 	toReturn = randTable[t_index];
-	toReturn.real += (-3.2 + 6.4 * curand_uniform(&state[index])) / RTGRIDNUM;
-	toReturn.imag += (-3.2 + 6.4 * curand_uniform(&state[index])) / RTGRIDNUM;
+	toReturn.real += (-3.2f + 6.4f * curand_uniform(&state[index])) / RTGRIDNUM;
+	toReturn.imag += (-3.2f + 6.4f * curand_uniform(&state[index])) / RTGRIDNUM;
 	return toReturn;
 }
 
-__global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
+__global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, iterationContorol iteration, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 	int sample_point, power = 1, lambda = 1;
 	complex c, z, z_start, tortoise;
@@ -170,7 +174,7 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic 
 		for (int j = 0; j < iteration.max_iteration; j++) {
 			z = f(z, c);
 
-			if (z.real * z.real + z.imag * z.imag > 10.0) {
+			if (z.real * z.real + z.imag * z.imag > 10.0f) {
 				if (j >= iteration.min_iteration) {
 					sample_point = 1;
 				}
@@ -195,11 +199,11 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, const graphic 
 			for (int j = 0; j < iteration.max_iteration; j++) {
 				z = f(z, c);
 
-				if (z.real * z.real + z.imag * z.imag > 10.0) {
+				if (z.real * z.real + z.imag * z.imag > 10.0f) {
 					break;
 				}
 				else{
-					draw_point(buddha, z, graph);
+					draw_point(buddha, z, g);
 				}
 			}
 		}
@@ -246,8 +250,8 @@ unsigned long long int est_max(unsigned long long int* data, unsigned int n) {
 	return toReturn;
 }
 
-void saveImage(unsigned long long int* data, graphic g) {
-	int tmp, min, max;
+void saveImage(unsigned long long int* data) {
+	unsigned long long int tmp, min, max;
 	FILE* fp = fopen("../../output.pgm", "wb");
 
 	// Write header.
@@ -259,7 +263,7 @@ void saveImage(unsigned long long int* data, graphic g) {
 	// Write pixel.
 	for (int i = 0; i < g.h; i++) {
 		for (int j = 0; j < g.w; j++) {
-			tmp = 0xff * pow((data[i * g.w + j] - min) / ((double)max), 1/g.gamma);
+			tmp = 0xff * pow((double) (data[i * g.w + j] - min) / max, 1/g.gamma);
 			putc(tmp, fp);
 		}
 	}
@@ -268,10 +272,13 @@ void saveImage(unsigned long long int* data, graphic g) {
 }
 
 
-cudaError renderImage(unsigned long long int* buddha, const graphic graph, const iterationContorol iteration) {
-	const int blocks = 256 * 256, threads = 16;
+cudaError renderImage(unsigned long long int* buddha) {
+	const int blocks = 256*256, threads = 1024;
 	unsigned long long int* dev_buddha;
 	complex* dev_randTable;
+
+	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { RTGRIDNUM / rtblocks.x, RTGRIDNUM / rtblocks.y, 1 };
+	int* dev_importance;
 
 	cudaError_t cudaStatus;
 
@@ -291,12 +298,26 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	}
 
 	initRNG <<<blocks, threads >>> (1222, dev_states);
+
+	// Check for any errors launching the kernel
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "initRNG launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		goto Error;
+	}
+
 	subend_t = clock();
-	printf("Initirizing has done. (%.2f)\n", (double)(subend_t - start_t)/CLOCKS_PER_SEC);
+	printf("Initirizing has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
+		goto Error;
+	}
+	subend_t = clock();
+	printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	//Make random table.
-	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { RTGRIDNUM / rtblocks.x, RTGRIDNUM / rtblocks.y, 1 };
-	int* dev_importance;
 
 	cudaStatus = cudaMalloc((void**)& dev_importance, RTGRIDNUM * RTGRIDNUM * sizeof(int));
 	if (cudaStatus != cudaSuccess) {
@@ -304,7 +325,7 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 		goto Error;
 	}
 
-	estImportance <<<rtblocks, rtthreads >>> (dev_importance, graph, iteration);
+	estImportance <<<rtblocks, rtthreads >>> (dev_importance, g, iteration);
 	subend_t = clock();
 	printf("Esting importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
@@ -314,6 +335,14 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 		fprintf(stderr, "estImportance launch failed: %s\n", cudaGetErrorString(cudaStatus));
 		goto Error;
 	}
+
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
+		goto Error;
+	}
+	subend_t = clock();
+	printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	int* importance = (int*)malloc(RTGRIDNUM * RTGRIDNUM * sizeof(int));
 	for (int i = 0; i < RTGRIDNUM * RTGRIDNUM; i++) {
@@ -326,7 +355,8 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
 	}
-
+	subend_t = clock();
+	printf("cudaMemcpy dev_importance to importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	int sum = 0, rtindex = 0;
 	complex c;
@@ -337,14 +367,16 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 				sum++;
 		}
 	}
+	subend_t = clock();
+	printf("Computing randTable length has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	complex* randTable = (complex*)malloc(sizeof(complex) * sum);
 
 	for (int i = 0; i < RTGRIDNUM; i++) {
 		for (int j = 0; j < RTGRIDNUM; j++) {
 			if (checkImportance(importance, i, j)) {
-				c.real = -3.2 + 6.4 * i / RTGRIDNUM;
-				c.imag = -3.2 + 6.4 * j / RTGRIDNUM;
+				c.real = -3.2f + 6.4f * i / RTGRIDNUM;
+				c.imag = -3.2f + 6.4f * j / RTGRIDNUM;
 				randTable[rtindex] = c;
 				rtindex++;
 			}
@@ -382,7 +414,7 @@ cudaError renderImage(unsigned long long int* buddha, const graphic graph, const
 	}
 
 	// Compute buddhabrot.
-	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, graph, iteration, dev_states, dev_randTable, sum);
+	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, g, iteration, dev_states, dev_randTable, sum);
 	subend_t = clock();
 	printf("Computing buddhabrot has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
@@ -434,11 +466,11 @@ void set_param(int argc, char** argv) {
 				g.h = strtol(argv[++i], NULL, 10);
 			}
 			else if (strcmp(argv[i], "-c") == 0) {
-				g.center.real = strtod(argv[++i], NULL);
-				g.center.imag = strtod(argv[++i], NULL);
+				g.center.real = strtof(argv[++i], NULL);
+				g.center.imag = strtof(argv[++i], NULL);
 			}
 			else if (strcmp(argv[i], "-s") == 0) {
-				g.size = strtod(argv[++i], NULL);
+				g.size = strtof(argv[++i], NULL);
 			}
 			else if (strcmp(argv[i], "-g") == 0) {
 				g.gamma = strtod(argv[++i], NULL);
@@ -464,23 +496,24 @@ void set_param(int argc, char** argv) {
 	g.ratio = ((double)g.w) / g.h;
 	g.dx = g.size / g.h;
 	g.dy = g.size / g.h;
-	g.max_real = g.center.real + 0.5 * g.size * g.ratio;
-	g.max_imag = g.center.imag + 0.5 * g.size;
-	g.min_real = g.center.real - 0.5 * g.size * g.ratio;
-	g.min_imag = g.center.imag - 0.5 * g.size;
+	g.max_real = g.center.real + 0.5f * g.size * g.ratio;
+	g.max_imag = g.center.imag + 0.5f * g.size;
+	g.min_real = g.center.real - 0.5f * g.size * g.ratio;
+	g.min_imag = g.center.imag - 0.5f * g.size;
 }
 
 int main(int argc, char** argv)
 {
+	start_t = clock();
 	// Default value.
 	g.w = WIDTH;
 	g.h = HEIGHT;
-	g.center.real = -0.5; // -0.15943359375;
-	g.center.imag = 0.0; // 1.034150390625;
-	g.size = 2.6;// 0.03125;
+	g.center.real = -0.5f; // -0.15943359375f;
+	g.center.imag = 0.0f; // 1.034150390625f;
+	g.size = 2.6f;// 0.03125f;
 	g.gamma = 1.0;
 
-	iteration.samples_per_thread = 32;
+	iteration.samples_per_thread = 1;
 	iteration.min_iteration = 0;
 	iteration.max_iteration = 1000;
 
@@ -496,17 +529,15 @@ int main(int argc, char** argv)
 		buddha[i] = 0;
 	}
 
-	start_t = clock();
-
 	// compute and render buddhabrot.
-	cudaError cudaStatus = renderImage(buddha, g, iteration);
+	cudaError cudaStatus = renderImage(buddha);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "renderImage failed!\n");
 		return 1;
 	}
 
 	// save image of buddhabrot.
-	saveImage(buddha, g);
+	saveImage(buddha);
 	subend_t = clock();
 	printf("Saving image has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
