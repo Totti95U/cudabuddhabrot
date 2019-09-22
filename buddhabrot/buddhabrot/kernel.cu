@@ -6,15 +6,23 @@ To delete "warning C4819"
 */
 
 
-#include "cuda_runtime.h"
+#include "cuda.h"
 #include "device_launch_parameters.h"
 #include "curand.h"
 #include "curand_kernel.h"
+#include "device_functions.h"
+#include <math_functions.h>
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <time.h>
+#include <math.h>
+
+#ifdef __BREAK_ME__
+#include <math_functions.h>
+#else
+#include <cuda_runtime.h>
+#endif
 
 #define WIDTH 1280
 #define HEIGHT 720
@@ -49,10 +57,22 @@ typedef struct {
 	int max_iteration;
 } iterationContorol;
 
+typedef struct {
+	int axi1;
+	int axi2;
+	float angl;
+	float RotMat[16];
+} rotationContorol;
+
+// global variances
 clock_t start_t, subend_t;
 
 graphic g;
 iterationContorol iteration;
+rotationContorol rotation[6];
+int rotation_axis[6*2] = { 0, 1, 1, 2, 2, 3, 3, 0, 1, 3, 0, 2 };
+
+float RotationMatrix[16] = { 0 };
 
 cudaError_t renderImage(unsigned long long int* buddha);
 
@@ -65,6 +85,7 @@ __device__ complex f(complex z, complex c) {
 
 __global__ void initRNG(const unsigned int seed, curandStateMRG32k3a_t* states) {
 	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+
 	// standard initirized
 	// curand_init(seed, index, 0, &states[index]);
 
@@ -99,10 +120,26 @@ __device__ int checkinSecondDisc(complex z) {
 	}
 }
 
-__global__ void estImportance(int* importance, graphic g, iterationContorol iteration) {
+__device__ void rot4d(const float* RotMat, complex* z, const complex* c) {
+	float vect[4] = { z->real, z->imag, c->real, c->imag };
+
+	z->real = 0.0f;
+	z->imag = 0.0f;
+	// c->real = 0.0f;
+	// c->imag = 0.0f;
+
+	for (int i = 0; i < 4; i++) {
+		z->real += RotMat[i] * vect[i];
+		z->imag += RotMat[i + 4] * vect[i];
+		// c->real += RotMat[i + 8] * vect[i];
+		// c->imag += RotMat[i + 12] * vect[i];
+	}
+}
+
+__global__ void estImportance(int* importance, const graphic g, const iterationContorol iteration, const float* RotMat) {
 	int indexx = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int indexy = (blockIdx.y * blockDim.y) + threadIdx.y;
-	complex c, z;
+	complex c, z, rotated_z, rotated_c;
 
 	// Initiarize complex num c , z and int importance.
 	c.real = -3.2f + 6.4f * indexx / RTGRIDNUM;
@@ -124,8 +161,13 @@ __global__ void estImportance(int* importance, graphic g, iterationContorol iter
 			importance[indexx + indexy * RTGRIDNUM] = 0;
 			return;
 		}
-		else if (checkinWindow(z, g) && i >= iteration.min_iteration) {
-			importance[indexx + indexy * RTGRIDNUM] = 1;
+		else if (i >= iteration.min_iteration) {
+			rotated_z = z; //rotated_c = c;
+			for (int i = 0; i < 6; i++) {
+				rot4d(RotMat, &rotated_z, &c);
+			}
+			if (checkinWindow(rotated_z, g))
+				importance[indexx + indexy * RTGRIDNUM] = 1;
 		}
 	}
 }
@@ -151,10 +193,10 @@ __device__ complex curand_withtable(curandStateMRG32k3a_t* state, const complex*
 	return toReturn;
 }
 
-__global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, iterationContorol iteration, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
+__global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, iterationContorol iteration, float* RotMat, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 	int sample_point, power = 1, lambda = 1;
-	complex c, z, z_start, tortoise;
+	complex c, z, z_start, tortoise, rotated_z, rotated_c;
 
 	for (int i = 0; i < iteration.samples_per_thread; i++) {
 		// Generate sample
@@ -203,7 +245,11 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 					break;
 				}
 				else{
-					draw_point(buddha, z, g);
+					rotated_z = z; //rotated_c = c;
+					for (int i = 0; i < 6; i++) {
+						rot4d(RotMat, &rotated_z, &c);
+					}
+					draw_point(buddha, rotated_z, g);
 				}
 			}
 		}
@@ -273,9 +319,10 @@ void saveImage(unsigned long long int* data) {
 
 
 cudaError renderImage(unsigned long long int* buddha) {
-	const int blocks = 256*256, threads = 1024;
+	const int blocks = 256 * 256, threads = 512;
 	unsigned long long int* dev_buddha;
 	complex* dev_randTable;
+	float* dev_RotationMatrix;
 
 	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { RTGRIDNUM / rtblocks.x, RTGRIDNUM / rtblocks.y, 1 };
 	int* dev_importance;
@@ -325,7 +372,20 @@ cudaError renderImage(unsigned long long int* buddha) {
 		goto Error;
 	}
 
-	estImportance <<<rtblocks, rtthreads >>> (dev_importance, g, iteration);
+	cudaStatus = cudaMalloc((void**)& dev_RotationMatrix, 16 * sizeof(float));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!\n");
+		goto Error;
+	}
+
+	// Copy input vectors from host memory to GPU buffers.
+	cudaStatus = cudaMemcpy(dev_RotationMatrix, RotationMatrix, 16 * sizeof(float), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!\n");
+		goto Error;
+	}
+
+	estImportance <<<rtblocks, rtthreads >>> (dev_importance, g, iteration, dev_RotationMatrix);
 	subend_t = clock();
 	printf("Esting importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
@@ -414,7 +474,7 @@ cudaError renderImage(unsigned long long int* buddha) {
 	}
 
 	// Compute buddhabrot.
-	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, g, iteration, dev_states, dev_randTable, sum);
+	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, g, iteration, dev_RotationMatrix, dev_states, dev_randTable, sum);
 	subend_t = clock();
 	printf("Computing buddhabrot has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
@@ -454,7 +514,25 @@ Error:
 	return cudaStatus;
 }
 
+void matrix_product(float* M, const float* N) {
+	float result[16] = { 0 };
+
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++) {
+			for (int n = 0; n < 4; n++) {
+				result[j + 4 * i] += M[n + 4 * i] * N[j + 4 * n];
+			}
+		}
+	}
+
+	for (int i = 0; i < 16; i++) {
+		M[i] = result[i];
+	}
+}
+
 void set_param(int argc, char** argv) {
+	int tmp;
+
 	// Subsitute to parameters.
 	if (argc > 1) {
 		for (int i = 1; i < argc;) {
@@ -484,6 +562,10 @@ void set_param(int argc, char** argv) {
 			else if (strcmp(argv[i], "-sample") == 0) {
 				iteration.samples_per_thread = strtol(argv[++i], NULL, 10);
 			}
+			else if (strcmp(argv[i], "-r") == 0) {
+				tmp = strtol(argv[++i], NULL, 10);
+				rotation[tmp].angl = 180 * strtof(argv[++i], NULL) / 3.14159265359f;
+			}
 			else {
 				fprintf(stderr, "Invalid options !");
 				exit(1);
@@ -500,11 +582,30 @@ void set_param(int argc, char** argv) {
 	g.max_imag = g.center.imag + 0.5f * g.size;
 	g.min_real = g.center.real - 0.5f * g.size * g.ratio;
 	g.min_imag = g.center.imag - 0.5f * g.size;
+
+	for (int n = 0; n < 6; n++) {
+		for (int i = 0; i < 4; i++) {
+			for (int j = 0; j < 4; j++) {
+				rotation[n].RotMat[j + 4 * i] = (i == j) ? 1.0f : 0.0f;
+			}
+		}
+		rotation[n].RotMat[rotation[n].axi1 + 4 * rotation[n].axi1] = cospif(rotation[n].angl);
+		rotation[n].RotMat[rotation[n].axi2 + 4 * rotation[n].axi1] = -sinpif(rotation[n].angl);
+		rotation[n].RotMat[rotation[n].axi1 + 4 * rotation[n].axi2] = sinpif(rotation[n].angl);
+		rotation[n].RotMat[rotation[n].axi2 + 4 * rotation[n].axi2] = cospif(rotation[n].angl);
+	}
+	for (int i = 0; i < 16; i++) {
+			RotationMatrix[i] = rotation[0].RotMat[i];
+	}
+	for (int n = 1; n < 6; n++) {
+		matrix_product(RotationMatrix, rotation[n].RotMat);
+	}
 }
 
 int main(int argc, char** argv)
 {
 	start_t = clock();
+
 	// Default value.
 	g.w = WIDTH;
 	g.h = HEIGHT;
@@ -513,9 +614,19 @@ int main(int argc, char** argv)
 	g.size = 2.6f;// 0.03125f;
 	g.gamma = 1.0;
 
-	iteration.samples_per_thread = 1;
+	iteration.samples_per_thread = 2;
 	iteration.min_iteration = 0;
 	iteration.max_iteration = 1000;
+
+	float angles[6] = { 45.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+	for (int i=0; i < 6; i++){
+		rotation[i].axi1 = rotation_axis[2 * i];
+		printf("rotation axis1: %d\n", rotation_axis[2 * i]);
+		rotation[i].axi2 = rotation_axis[2 * i + 1];
+		printf("rotation axis2: %d\n", rotation_axis[2 * i + 1]);
+		rotation[i].angl = -angles[i] / 180;
+		printf("rotation angle: %f\n", rotation[i].angl);
+	}
 
 	set_param(argc, argv);
 
