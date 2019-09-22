@@ -49,6 +49,8 @@ typedef struct {
 	float min_imag;
 
 	double gamma;
+
+	char output[100];
 } graphic;
 
 typedef struct {
@@ -79,7 +81,7 @@ cudaError_t renderImage(unsigned long long int* buddha);
 __device__ complex f(complex z, complex c) {
 	complex toReturn;
 	toReturn.real = z.real * z.real - z.imag * z.imag + c.real;
-	toReturn.imag = 2 * z.real * z.imag + c.imag;
+	toReturn.imag = - 2 * z.real * z.imag + c.imag;
 	return toReturn;
 }
 
@@ -147,10 +149,12 @@ __global__ void estImportance(int* importance, const graphic g, const iterationC
 	z.real = 0.0f; z.imag = 0.0f;
 	importance[indexx + indexy * RTGRIDNUM] = 0;
 
+	/*
 	if (checkinMainBulb(c) || checkinSecondDisc(c)) {
 	 	importance[indexx + indexy * RTGRIDNUM] = 0;
 		return;
 	}
+	*/
 
 	for (int i = 0; i < iteration.max_iteration; i++) {
 		z = f(z, c);
@@ -163,9 +167,7 @@ __global__ void estImportance(int* importance, const graphic g, const iterationC
 		}
 		else if (i >= iteration.min_iteration) {
 			rotated_z = z; //rotated_c = c;
-			for (int i = 0; i < 6; i++) {
-				rot4d(RotMat, &rotated_z, &c);
-			}
+			rot4d(RotMat, &rotated_z, &c);
 			if (checkinWindow(rotated_z, g))
 				importance[indexx + indexy * RTGRIDNUM] = 1;
 		}
@@ -178,7 +180,8 @@ __device__ void draw_point(unsigned long long int* buddha, complex z, graphic g)
 		xnum = (z.real - g.min_real) / g.dx;
 		ynum = g.h - (z.imag - g.min_imag) / g.dy;
 
-		buddha[xnum + ynum * g.w] += 1;
+		if (0 <= xnum && xnum < g.w && 0 <= ynum && ynum < g.h)
+			buddha[xnum + ynum * g.w] += 1;
 	}
 }
 
@@ -209,8 +212,8 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 		tortoise = z;
 		sample_point = 0;
 
-		if (checkinMainBulb(c) || checkinSecondDisc(c))
-			continue;
+		// if (checkinMainBulb(c) || checkinSecondDisc(c))
+		//	continue;
 
 		// Judge whether a point z is escape.
 		for (int j = 0; j < iteration.max_iteration; j++) {
@@ -246,9 +249,7 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 				}
 				else{
 					rotated_z = z; //rotated_c = c;
-					for (int i = 0; i < 6; i++) {
-						rot4d(RotMat, &rotated_z, &c);
-					}
+					rot4d(RotMat, &rotated_z, &c);
 					draw_point(buddha, rotated_z, g);
 				}
 			}
@@ -298,7 +299,7 @@ unsigned long long int est_max(unsigned long long int* data, unsigned int n) {
 
 void saveImage(unsigned long long int* data) {
 	unsigned long long int tmp, min, max;
-	FILE* fp = fopen("../../output.pgm", "wb");
+	FILE* fp = fopen(g.output, "wb");
 
 	// Write header.
 	fprintf(fp, "P5\n%d %d\n%d\n", g.w, g.h, 0xff);
@@ -353,16 +354,16 @@ cudaError renderImage(unsigned long long int* buddha) {
 		goto Error;
 	}
 
-	subend_t = clock();
-	printf("Initirizing has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("Initirizing has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
 		goto Error;
 	}
-	subend_t = clock();
-	printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	//printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	//Make random table.
 
@@ -386,8 +387,8 @@ cudaError renderImage(unsigned long long int* buddha) {
 	}
 
 	estImportance <<<rtblocks, rtthreads >>> (dev_importance, g, iteration, dev_RotationMatrix);
-	subend_t = clock();
-	printf("Esting importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("Esting importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -401,8 +402,8 @@ cudaError renderImage(unsigned long long int* buddha) {
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
 		goto Error;
 	}
-	subend_t = clock();
-	printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	int* importance = (int*)malloc(RTGRIDNUM * RTGRIDNUM * sizeof(int));
 	for (int i = 0; i < RTGRIDNUM * RTGRIDNUM; i++) {
@@ -415,8 +416,8 @@ cudaError renderImage(unsigned long long int* buddha) {
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
 	}
-	subend_t = clock();
-	printf("cudaMemcpy dev_importance to importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("cudaMemcpy dev_importance to importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	int sum = 0, rtindex = 0;
 	complex c;
@@ -427,8 +428,8 @@ cudaError renderImage(unsigned long long int* buddha) {
 				sum++;
 		}
 	}
-	subend_t = clock();
-	printf("Computing randTable length has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("Computing randTable length has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	complex* randTable = (complex*)malloc(sizeof(complex) * sum);
 
@@ -442,8 +443,8 @@ cudaError renderImage(unsigned long long int* buddha) {
 			}
 		}
 	}
-	subend_t = clock();
-	printf("Makin random table has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("Makin random table has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	free(importance);
 
@@ -475,8 +476,8 @@ cudaError renderImage(unsigned long long int* buddha) {
 
 	// Compute buddhabrot.
 	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, g, iteration, dev_RotationMatrix, dev_states, dev_randTable, sum);
-	subend_t = clock();
-	printf("Computing buddhabrot has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("Computing buddhabrot has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -492,8 +493,8 @@ cudaError renderImage(unsigned long long int* buddha) {
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
 		goto Error;
 	}
-	subend_t = clock();
-	printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("cudaDeviceSynchronize has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 	
 	//Copy output vectors from GPU buffers to host memory.
 	cudaStatus = cudaMemcpy(buddha, dev_buddha, g.w * g.h * sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
@@ -501,13 +502,14 @@ cudaError renderImage(unsigned long long int* buddha) {
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
 	}
-	subend_t = clock();
-	printf("cudaMencpy from dev_buddha to buddha has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+	// subend_t = clock();
+	// printf("cudaMencpy from dev_buddha to buddha has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 Error:
 	cudaFree(dev_states);
 	cudaFree(dev_buddha);
 	cudaFree(dev_randTable);
+	cudaFree(dev_RotationMatrix);
 
 	free(randTable);
 
@@ -553,6 +555,9 @@ void set_param(int argc, char** argv) {
 			else if (strcmp(argv[i], "-g") == 0) {
 				g.gamma = strtod(argv[++i], NULL);
 			}
+			else if (strcmp(argv[i], "-o") == 0) {
+				sprintf(g.output, argv[++i]);
+			}
 			else if (strcmp(argv[i], "-max") == 0) {
 				iteration.max_iteration = strtol(argv[++i], NULL, 10);
 			}
@@ -594,63 +599,74 @@ void set_param(int argc, char** argv) {
 		rotation[n].RotMat[rotation[n].axi1 + 4 * rotation[n].axi2] = sinpif(rotation[n].angl);
 		rotation[n].RotMat[rotation[n].axi2 + 4 * rotation[n].axi2] = cospif(rotation[n].angl);
 	}
-	for (int i = 0; i < 16; i++) {
-			RotationMatrix[i] = rotation[0].RotMat[i];
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++) {
+			RotationMatrix[j + 4 * i] = (i == j) ? 1.0f : 0.0f;
+		}
 	}
-	for (int n = 1; n < 6; n++) {
+	for (int n = 0; n < 6; n++) {
 		matrix_product(RotationMatrix, rotation[n].RotMat);
 	}
 }
 
 int main(int argc, char** argv)
 {
-	start_t = clock();
+	// start_t = clock();
+	cudaError cudaStatus;
 
 	// Default value.
 	g.w = WIDTH;
-	g.h = HEIGHT;
-	g.center.real = -0.5f; // -0.15943359375f;
+	g.h = WIDTH;
+	g.center.real = -0.0f; // -0.15943359375f;
 	g.center.imag = 0.0f; // 1.034150390625f;
-	g.size = 2.6f;// 0.03125f;
-	g.gamma = 1.0;
+	g.size = 3.2f;// 0.03125f;
+	g.gamma = 2.0;
+	sprintf(g.output, "../../output.pmg");
 
 	iteration.samples_per_thread = 2;
-	iteration.min_iteration = 0;
-	iteration.max_iteration = 1000;
+	iteration.min_iteration = 20;
+	iteration.max_iteration = 500;
 
-	float angles[6] = { 45.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-	for (int i=0; i < 6; i++){
-		rotation[i].axi1 = rotation_axis[2 * i];
-		printf("rotation axis1: %d\n", rotation_axis[2 * i]);
-		rotation[i].axi2 = rotation_axis[2 * i + 1];
-		printf("rotation axis2: %d\n", rotation_axis[2 * i + 1]);
-		rotation[i].angl = -angles[i] / 180;
-		printf("rotation angle: %f\n", rotation[i].angl);
-	}
+	int max_ites[3] = { 50, 500, 5000 };
 
-	set_param(argc, argv);
+	for (int n = 0; n < 3; n++) {
+		float angles[6] = { 0.0f , 0.0f, 0.0f, 0.0f, 0.0f , 0.0f };
+		for (int i = 0; i < 6; i++) {
+			rotation[i].axi1 = rotation_axis[2 * i];
+			rotation[i].axi2 = rotation_axis[2 * i + 1];
+			rotation[i].angl = -angles[i] / 180;// -3.14159265359f *
+		}
+		sprintf(g.output, "../../pgms/output%03d.pgm", n);
 
-	unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * g.w * g.h);
-	if (buddha == NULL) {
-		printf("Memory cannot be allocated.\n");
+		iteration.max_iteration = max_ites[n];
+
+		set_param(argc, argv);
+
+		unsigned long long int* buddha = (unsigned long long int*)malloc(sizeof(unsigned long long int) * g.w * g.h);
+		if (buddha == NULL) {
+			printf("Memory cannot be allocated.\n");
+			free(buddha);
+			return 1;
+		}
+		for (int i = 0; i < g.w * g.h; i++) {
+			buddha[i] = 0;
+		}
+
+		// compute and render buddhabrot.
+		cudaError cudaStatus = renderImage(buddha);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "renderImage failed!\n");
+			return 1;
+		}
+
+		// save image of buddhabrot.
+		saveImage(buddha);
+		// subend_t = clock();
+		// printf("Saving image has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
+
 		free(buddha);
-		return 1;
+		printf("%03d th image has just been saved.\n", n);
 	}
-	for (int i = 0; i < g.w * g.h; i++) {
-		buddha[i] = 0;
-	}
-
-	// compute and render buddhabrot.
-	cudaError cudaStatus = renderImage(buddha);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "renderImage failed!\n");
-		return 1;
-	}
-
-	// save image of buddhabrot.
-	saveImage(buddha);
-	subend_t = clock();
-	printf("Saving image has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -659,8 +675,6 @@ int main(int argc, char** argv)
 		fprintf(stderr, "cudaDeviceReset failed!\n");
 		return 1;
 	}
-
-	free(buddha);
 
     return 0;
 }
