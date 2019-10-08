@@ -10,48 +10,26 @@ To delete "warning C4819"
 #include "device_launch_parameters.h"
 #include "curand.h"
 #include "curand_kernel.h"
-#include "device_functions.h"
-#include <math_functions.h>
+#include "cuda_runtime.h"
+#include "cuda_runtime_api.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <math.h>
+#include <direct.h>
+#include <Windows.h>
 
-#ifdef __BREAK_ME__
-#include <math_functions.h>
-#else
-#include <cuda_runtime.h>
-#endif
+#include "types.h"
+#include "mycomplex.cu"
+#include "denoiseFilter.cu"
 
 #define WIDTH 1280
 #define HEIGHT 720
+#define BLOCKS 4096
+#define THREADS 256
 #define RTGRIDNUM 1024
 
-typedef struct {
-	float real;
-	float imag;
-} complex;
-
-typedef struct {
-	int w;
-	int h;
-	double ratio;
-
-	float dx;
-	float dy;
-
-	complex center;
-	float size;
-	float max_real;
-	float min_real;
-	float max_imag;
-	float min_imag;
-
-	double gamma;
-
-	char output[100];
-} graphic;
 
 typedef struct {
 	int samples_per_thread;
@@ -76,23 +54,24 @@ int rotation_axis[6*2] = { 0, 1, 1, 2, 2, 3, 3, 0, 1, 3, 0, 2 };
 
 float RotationMatrix[16] = { 0 };
 
+curandStateMRG32k3a_t* dev_states;
+
 cudaError_t renderImage(unsigned long long int* buddha);
 
 __device__ complex f(complex z, complex c) {
-	complex toReturn;
-	toReturn.real = z.real * z.real - z.imag * z.imag + c.real;
-	toReturn.imag = - 2 * z.real * z.imag + c.imag;
-	return toReturn;
+	// z.real = (z.real > 0) ? z.real : -z.real;
+	z.imag = (z.imag > 0) ? z.imag : -z.imag;
+	return z * z + c;
 }
 
 __global__ void initRNG(const unsigned int seed, curandStateMRG32k3a_t* states) {
 	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 	// standard initirized
-	// curand_init(seed, index, 0, &states[index]);
+	curand_init(seed, index, 0, &states[index]);
 
 	//fast initirized
-	curand_init((seed << 20) + index, 0, 0, &states[index]);
+	// curand_init((seed << 20) + index, 0, 0, &states[index]);
 }
 
 __device__ int checkinWindow(complex z, graphic g) {
@@ -144,9 +123,10 @@ __global__ void estImportance(int* importance, const graphic g, const iterationC
 	complex c, z, rotated_z, rotated_c;
 
 	// Initiarize complex num c , z and int importance.
-	c.real = -3.2f + 6.4f * indexx / RTGRIDNUM;
-	c.imag = -3.2f + 6.4f * indexy / RTGRIDNUM;
+	c.real = -5.0f + 10.0f * indexx / RTGRIDNUM;
+	c.imag = -5.0f + 10.0f * indexy / RTGRIDNUM;
 	z.real = 0.0f; z.imag = 0.0f;
+	
 	importance[indexx + indexy * RTGRIDNUM] = 0;
 
 	/*
@@ -158,7 +138,7 @@ __global__ void estImportance(int* importance, const graphic g, const iterationC
 
 	for (int i = 0; i < iteration.max_iteration; i++) {
 		z = f(z, c);
-		if (z.real * z.real + z.imag * z.imag > 10.0f) {
+		if (z.real * z.real + z.imag * z.imag > 32.0f) {
 			return;
 		}
 		else if (i == iteration.max_iteration - 1) {
@@ -191,8 +171,8 @@ __device__ complex curand_withtable(curandStateMRG32k3a_t* state, const complex*
 
 	int t_index = curand(&state[index]) % length;
 	toReturn = randTable[t_index];
-	toReturn.real += (-3.2f + 6.4f * curand_uniform(&state[index])) / RTGRIDNUM;
-	toReturn.imag += (-3.2f + 6.4f * curand_uniform(&state[index])) / RTGRIDNUM;
+	toReturn.real += (-5.0f + 10.0f * curand_uniform(&state[index])) / RTGRIDNUM;
+	toReturn.imag += (-5.0f + 10.0f * curand_uniform(&state[index])) / RTGRIDNUM;
 	return toReturn;
 }
 
@@ -206,20 +186,25 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 		c = curand_withtable(states, randTable, length);
 
 		// Initialize complex number z and flag sample_point
-		z_start.real = 0; z_start.imag = 0;
+		if (g.hologram < 1) {
+			z_start.real = 0.0f; z_start.imag = 0.0f;
+		}
+		else {
+			z_start.real = -1 + 2 * curand_uniform(&states[index]); z_start.imag = -1 + 2 * curand_uniform(&states[index]);
+		}
 
 		z = z_start;
 		tortoise = z;
 		sample_point = 0;
 
-		// if (checkinMainBulb(c) || checkinSecondDisc(c))
-		//	continue;
+	//	if (checkinMainBulb(c) || checkinSecondDisc(c))
+	//		continue;
 
 		// Judge whether a point z is escape.
 		for (int j = 0; j < iteration.max_iteration; j++) {
 			z = f(z, c);
 
-			if (z.real * z.real + z.imag * z.imag > 10.0f) {
+			if (z.real * z.real + z.imag * z.imag > 32.0f) {
 				if (j >= iteration.min_iteration) {
 					sample_point = 1;
 				}
@@ -244,7 +229,7 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 			for (int j = 0; j < iteration.max_iteration; j++) {
 				z = f(z, c);
 
-				if (z.real * z.real + z.imag * z.imag > 10.0f) {
+				if (z.real * z.real + z.imag * z.imag > 32.0f) {
 					break;
 				}
 				else{
@@ -298,29 +283,45 @@ unsigned long long int est_max(unsigned long long int* data, unsigned int n) {
 }
 
 void saveImage(unsigned long long int* data) {
-	unsigned long long int tmp, min, max;
+	unsigned long long int min, max;
+	int tmp;
+	float* normalised_data;
 	FILE* fp = fopen(g.output, "wb");
+
+	normalised_data = (float*)malloc(g.w * g.h * sizeof(float));
 
 	// Write header.
 	fprintf(fp, "P5\n%d %d\n%d\n", g.w, g.h, 0xff);
 
+	// normalizing.
 	min = est_min(data, 1);
 	max = est_max(data, 1);
+	for (int i = 0; i < g.h; i++) {
+		for (int j = 0; j < g.w; j++) {
+			normalised_data[j + i * g.w] = powf((float)(data[i * g.w + j] - min) / (max - min), 1 / g.gamma);
+		}
+	}
+	
+
+	// Denoising.
+	NLMdenoise(normalised_data, 5, 3, g.sigma, g.sigma, g);
 
 	// Write pixel.
 	for (int i = 0; i < g.h; i++) {
 		for (int j = 0; j < g.w; j++) {
-			tmp = 0xff * pow((double) (data[i * g.w + j] - min) / max, 1/g.gamma);
+			tmp = (normalised_data[j + i * g.w] > 1.0f) ? 0xff : (int)(0xff * normalised_data[j + i * g.w]);
+			tmp = (normalised_data[j + i * g.w] < 0.0f) ? 0x00 : (int)(0xff * normalised_data[j + i * g.w]);
 			putc(tmp, fp);
 		}
 	}
-	 
+	
+	free(normalised_data);
 	fclose(fp);
 }
 
 
+
 cudaError renderImage(unsigned long long int* buddha) {
-	const int blocks = 256 * 256, threads = 512;
 	unsigned long long int* dev_buddha;
 	complex* dev_randTable;
 	float* dev_RotationMatrix;
@@ -333,24 +334,6 @@ cudaError renderImage(unsigned long long int* buddha) {
 	cudaStatus = cudaSetDevice(0);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?\n");
-		goto Error;
-	}
-
-	// Initiarize random generator.
-	curandStateMRG32k3a_t* dev_states;
-
-	cudaStatus = cudaMalloc((void**)& dev_states, blocks * threads * sizeof(curandStateMRG32k3a_t));
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!\n");
-		goto Error;
-	}
-
-	initRNG <<<blocks, threads >>> (1222, dev_states);
-
-	// Check for any errors launching the kernel
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "initRNG launch failed: %s\n", cudaGetErrorString(cudaStatus));
 		goto Error;
 	}
 
@@ -436,8 +419,8 @@ cudaError renderImage(unsigned long long int* buddha) {
 	for (int i = 0; i < RTGRIDNUM; i++) {
 		for (int j = 0; j < RTGRIDNUM; j++) {
 			if (checkImportance(importance, i, j)) {
-				c.real = -3.2f + 6.4f * i / RTGRIDNUM;
-				c.imag = -3.2f + 6.4f * j / RTGRIDNUM;
+				c.real = -5.0f + 10.0f * i / RTGRIDNUM;
+				c.imag = -5.0f + 10.0f * j / RTGRIDNUM;
 				randTable[rtindex] = c;
 				rtindex++;
 			}
@@ -475,7 +458,7 @@ cudaError renderImage(unsigned long long int* buddha) {
 	}
 
 	// Compute buddhabrot.
-	computeBuddhabrot <<<blocks, threads>>> (dev_buddha, g, iteration, dev_RotationMatrix, dev_states, dev_randTable, sum);
+	computeBuddhabrot <<<BLOCKS, THREADS>>> (dev_buddha, g, iteration, dev_RotationMatrix, dev_states, dev_randTable, sum);
 	// subend_t = clock();
 	// printf("Computing buddhabrot has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
@@ -506,7 +489,6 @@ cudaError renderImage(unsigned long long int* buddha) {
 	// printf("cudaMencpy from dev_buddha to buddha has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
 Error:
-	cudaFree(dev_states);
 	cudaFree(dev_buddha);
 	cudaFree(dev_randTable);
 	cudaFree(dev_RotationMatrix);
@@ -552,8 +534,11 @@ void set_param(int argc, char** argv) {
 			else if (strcmp(argv[i], "-s") == 0) {
 				g.size = strtof(argv[++i], NULL);
 			}
+			else if (strcmp(argv[i], "-holo") == 0) {
+				g.hologram = strtof(argv[++i], NULL);
+			}
 			else if (strcmp(argv[i], "-g") == 0) {
-				g.gamma = strtod(argv[++i], NULL);
+				g.gamma = strtof(argv[++i], NULL);
 			}
 			else if (strcmp(argv[i], "-o") == 0) {
 				sprintf(g.output, argv[++i]);
@@ -583,9 +568,9 @@ void set_param(int argc, char** argv) {
 	g.ratio = ((double)g.w) / g.h;
 	g.dx = g.size / g.h;
 	g.dy = g.size / g.h;
-	g.max_real = g.center.real + 0.5f * g.size * g.ratio;
+	g.max_real = g.center.real + 0.5f * g.size * (float)g.ratio;
 	g.max_imag = g.center.imag + 0.5f * g.size;
-	g.min_real = g.center.real - 0.5f * g.size * g.ratio;
+	g.min_real = g.center.real - 0.5f * g.size * (float)g.ratio;
 	g.min_imag = g.center.imag - 0.5f * g.size;
 
 	for (int n = 0; n < 6; n++) {
@@ -613,24 +598,52 @@ int main(int argc, char** argv)
 {
 	// start_t = clock();
 	cudaError cudaStatus;
+	char tmpfile[260];
 
 	// Default value.
-	g.w = WIDTH;
-	g.h = WIDTH;
-	g.center.real = -0.0f; // -0.15943359375f;
-	g.center.imag = 0.0f; // 1.034150390625f;
-	g.size = 3.2f;// 0.03125f;
-	g.gamma = 2.0;
+	g.w = 1280;
+	g.h = 720;
+	g.center.real = -0.25f; // -0.25f, // 0.325f; // -0.15943359375f;
+	g.center.imag = 0.0f; // 0.0f; // 1.034150390625f;
+	g.size = 3.0f;// 0.03125f;
+	g.hologram = 0.0f;
+	g.gamma = 2.0f;
 	sprintf(g.output, "../../output.pmg");
 
-	iteration.samples_per_thread = 2;
-	iteration.min_iteration = 20;
-	iteration.max_iteration = 500;
+	g.sigma = 0.15f;
 
-	int max_ites[3] = { 50, 500, 5000 };
+	iteration.samples_per_thread = 8;
+	iteration.min_iteration = 0;
+	iteration.max_iteration = 100;
 
-	for (int n = 0; n < 3; n++) {
-		float angles[6] = { 0.0f , 0.0f, 0.0f, 0.0f, 0.0f , 0.0f };
+	// Initiarize random generator.
+	{
+		cudaStatus = cudaMalloc((void**)& dev_states, BLOCKS * THREADS * sizeof(curandStateMRG32k3a_t));
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!\n");
+			goto ErrorMain;
+		}
+
+		initRNG <<< BLOCKS, THREADS >>> (1222, dev_states);
+
+		cudaStatus = cudaDeviceSynchronize();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
+			goto ErrorMain;
+		}
+	}
+
+	int max_iterations[3] = {50, 500, 5000};
+
+	// Initiarize "/pgms" folder.
+	for (int i = 0; i < 1000; i++) {
+		sprintf(tmpfile, "../../pgms/output%03d.pgm", i);
+		DeleteFile(tmpfile);
+	}
+
+	for (int n = 0; n < 180; n++) {
+		float angles[6] = { 0.0f, n * 2.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+		// Set rotation parameter.
 		for (int i = 0; i < 6; i++) {
 			rotation[i].axi1 = rotation_axis[2 * i];
 			rotation[i].axi2 = rotation_axis[2 * i + 1];
@@ -638,7 +651,7 @@ int main(int argc, char** argv)
 		}
 		sprintf(g.output, "../../pgms/output%03d.pgm", n);
 
-		iteration.max_iteration = max_ites[n];
+		iteration.max_iteration = max_iterations[2];
 
 		set_param(argc, argv);
 
@@ -656,7 +669,7 @@ int main(int argc, char** argv)
 		cudaError cudaStatus = renderImage(buddha);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "renderImage failed!\n");
-			return 1;
+			goto ErrorMain;
 		}
 
 		// save image of buddhabrot.
@@ -668,6 +681,8 @@ int main(int argc, char** argv)
 		printf("%03d th image has just been saved.\n", n);
 	}
 
+ErrorMain:
+
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
 	cudaStatus = cudaDeviceReset();
@@ -675,6 +690,8 @@ int main(int argc, char** argv)
 		fprintf(stderr, "cudaDeviceReset failed!\n");
 		return 1;
 	}
+
+	cudaFree(dev_states);
 
     return 0;
 }
