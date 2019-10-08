@@ -1,4 +1,5 @@
 #include "types.h"
+#define im new complex { real = 0.0f, imag = 1.0f}
 // kernel and host code.
 
 template<typename T>

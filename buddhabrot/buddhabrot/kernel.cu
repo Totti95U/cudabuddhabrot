@@ -28,7 +28,10 @@ To delete "warning C4819"
 #define HEIGHT 720
 #define BLOCKS 4096
 #define THREADS 256
-#define RTGRIDNUM 1024
+#define RTGRIDNUM 2024
+#define THRESHOLD 3000
+
+#define abs(x) (x > 0) ? x : -x
 
 
 typedef struct {
@@ -59,8 +62,8 @@ curandStateMRG32k3a_t* dev_states;
 cudaError_t renderImage(unsigned long long int* buddha);
 
 __device__ complex f(complex z, complex c) {
-	// z.real = (z.real > 0) ? z.real : -z.real;
-	z.imag = (z.imag > 0) ? z.imag : -z.imag;
+	// z.real = abs(z.real);
+	// z.imag = abs(z.imag);
 	return z * z + c;
 }
 
@@ -154,14 +157,14 @@ __global__ void estImportance(int* importance, const graphic g, const iterationC
 	}
 }
 
-__device__ void draw_point(unsigned long long int* buddha, complex z, graphic g) {
+__device__ void draw_point(unsigned long long int* buddha, const complex z, const graphic g, const int n) {
 	int xnum, ynum;
 	if (checkinWindow(z, g)) {
 		xnum = (z.real - g.min_real) / g.dx;
 		ynum = g.h - (z.imag - g.min_imag) / g.dy;
 
 		if (0 <= xnum && xnum < g.w && 0 <= ynum && ynum < g.h)
-			buddha[xnum + ynum * g.w] += 1;
+			buddha[xnum + ynum * g.w] += n;
 	}
 }
 
@@ -226,7 +229,7 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 			// Initialize complex number z
 			z = z_start;
 
-			for (int j = 0; j < iteration.max_iteration; j++) {
+			for (int j = 0; j < THRESHOLD; j++) {
 				z = f(z, c);
 
 				if (z.real * z.real + z.imag * z.imag > 32.0f) {
@@ -235,7 +238,19 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 				else{
 					rotated_z = z; //rotated_c = c;
 					rot4d(RotMat, &rotated_z, &c);
-					draw_point(buddha, rotated_z, g);
+					draw_point(buddha, rotated_z, g, 1);
+				}
+			}
+			for (int j = THRESHOLD; j < iteration.max_iteration; j++) {
+				z = f(z, c);
+
+				if (z.real * z.real + z.imag * z.imag > 32.0f) {
+					break;
+				}
+				else {
+					rotated_z = z; //rotated_c = c;
+					rot4d(RotMat, &rotated_z, &c);
+					draw_point(buddha, rotated_z, g, 100);
 				}
 			}
 		}
@@ -610,11 +625,11 @@ int main(int argc, char** argv)
 	g.gamma = 2.0f;
 	sprintf(g.output, "../../output.pmg");
 
-	g.sigma = 0.15f;
+	g.sigma = 0.1f;
 
-	iteration.samples_per_thread = 8;
+	iteration.samples_per_thread = 16;
 	iteration.min_iteration = 0;
-	iteration.max_iteration = 100;
+	iteration.max_iteration = 100000;
 
 	// Initiarize random generator.
 	{
@@ -633,7 +648,7 @@ int main(int argc, char** argv)
 		}
 	}
 
-	int max_iterations[3] = {50, 500, 5000};
+	// int max_iterations[3] = {50, 500, 5000};
 
 	// Initiarize "/pgms" folder.
 	for (int i = 0; i < 1000; i++) {
@@ -641,7 +656,7 @@ int main(int argc, char** argv)
 		DeleteFile(tmpfile);
 	}
 
-	for (int n = 0; n < 180; n++) {
+	for (int n = 0; n < 1; n++) {
 		float angles[6] = { 0.0f, n * 2.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 		// Set rotation parameter.
 		for (int i = 0; i < 6; i++) {
@@ -651,7 +666,7 @@ int main(int argc, char** argv)
 		}
 		sprintf(g.output, "../../pgms/output%03d.pgm", n);
 
-		iteration.max_iteration = max_iterations[2];
+		// iteration.max_iteration = max_iterations[2];
 
 		set_param(argc, argv);
 
