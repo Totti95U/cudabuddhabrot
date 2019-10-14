@@ -22,6 +22,8 @@ typedef struct {
 
 	float gamma;
 	float hologram;
+	int type;
+	complex julia_c;
 
 	char output[100];
 

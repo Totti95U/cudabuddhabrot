@@ -24,15 +24,13 @@ To delete "warning C4819"
 #include "mycomplex.cu"
 #include "denoiseFilter.cu"
 
-#define WIDTH 1280
-#define HEIGHT 720
+// #define WIDTH 1280
+// #define HEIGHT 720
 #define BLOCKS 4096
 #define THREADS 256
 #define RTGRIDNUM 2024
-#define THRESHOLD 3000
 
 #define abs(x) (x > 0) ? x : -x
-
 
 typedef struct {
 	int samples_per_thread;
@@ -56,6 +54,7 @@ rotationContorol rotation[6];
 int rotation_axis[6*2] = { 0, 1, 1, 2, 2, 3, 3, 0, 1, 3, 0, 2 };
 
 float RotationMatrix[16] = { 0 };
+complex RotCenter[2];
 
 curandStateMRG32k3a_t* dev_states;
 
@@ -64,7 +63,7 @@ cudaError_t renderImage(unsigned long long int* buddha);
 __device__ complex f(complex z, complex c) {
 	// z.real = abs(z.real);
 	// z.imag = abs(z.imag);
-	return z * z + c;
+	return expf(z) + c;
 }
 
 __global__ void initRNG(const unsigned int seed, curandStateMRG32k3a_t* states) {
@@ -104,7 +103,7 @@ __device__ int checkinSecondDisc(complex z) {
 	}
 }
 
-__device__ void rot4d(const float* RotMat, complex* z, const complex* c) {
+__device__ void rot4d(const float* RotMat, const complex *RotCenter, complex* z, const complex* c) {
 	float vect[4] = { z->real, z->imag, c->real, c->imag };
 
 	z->real = 0.0f;
@@ -113,22 +112,29 @@ __device__ void rot4d(const float* RotMat, complex* z, const complex* c) {
 	// c->imag = 0.0f;
 
 	for (int i = 0; i < 4; i++) {
-		z->real += RotMat[i] * vect[i];
-		z->imag += RotMat[i + 4] * vect[i];
-		// c->real += RotMat[i + 8] * vect[i];
-		// c->imag += RotMat[i + 12] * vect[i];
+		z->real += RotMat[i] * (vect[i] - RotCenter[0].real);
+		z->imag += RotMat[i + 4] * (vect[i] - RotCenter[0].imag);
+		// c->real += RotMat[i + 8] * (vect[i] - RotCenter[1].real);
+		// c->imag += RotMat[i + 12] * (vect[i] - RotCenter[1].imag);
 	}
 }
 
-__global__ void estImportance(int* importance, const graphic g, const iterationContorol iteration, const float* RotMat) {
+__global__ void estImportance(int* importance, const graphic g, const iterationContorol iteration, const float* RotMat, const complex *RotCenter) {
 	int indexx = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int indexy = (blockIdx.y * blockDim.y) + threadIdx.y;
 	complex c, z, rotated_z, rotated_c;
 
 	// Initiarize complex num c , z and int importance.
-	c.real = -5.0f + 10.0f * indexx / RTGRIDNUM;
-	c.imag = -5.0f + 10.0f * indexy / RTGRIDNUM;
-	z.real = 0.0f; z.imag = 0.0f;
+	if (g.type == 0) {
+		c.real = -5.0f + 10.0f * indexx / RTGRIDNUM;
+		c.imag = -5.0f + 10.0f * indexy / RTGRIDNUM;
+		z.real = 0.0f; z.imag = 0.0f;
+	}
+	else {
+		z.real = -5.0f + 10.0f * indexx / RTGRIDNUM;
+		z.imag = -5.0f + 10.0f * indexy / RTGRIDNUM;
+		c = g.julia_c;
+	}
 	
 	importance[indexx + indexy * RTGRIDNUM] = 0;
 
@@ -150,7 +156,7 @@ __global__ void estImportance(int* importance, const graphic g, const iterationC
 		}
 		else if (i >= iteration.min_iteration) {
 			rotated_z = z; //rotated_c = c;
-			rot4d(RotMat, &rotated_z, &c);
+			rot4d(RotMat, RotCenter, &rotated_z, &c);
 			if (checkinWindow(rotated_z, g))
 				importance[indexx + indexy * RTGRIDNUM] = 1;
 		}
@@ -179,21 +185,33 @@ __device__ complex curand_withtable(curandStateMRG32k3a_t* state, const complex*
 	return toReturn;
 }
 
-__global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, iterationContorol iteration, float* RotMat, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
+__global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, iterationContorol iteration, float* RotMat, complex* RotCenter, curandStateMRG32k3a_t* states, const complex* randTable, const int length) {
 	const int index = blockDim.x * blockIdx.x + threadIdx.x;
 	int sample_point, power = 1, lambda = 1;
-	complex c, z, z_start, tortoise, rotated_z, rotated_c;
+	complex c, c_start, z, z_start, tortoise, rotated_z, rotated_c;
 
 	for (int i = 0; i < iteration.samples_per_thread; i++) {
 		// Generate sample
-		c = curand_withtable(states, randTable, length);
-
 		// Initialize complex number z and flag sample_point
-		if (g.hologram < 1) {
-			z_start.real = 0.0f; z_start.imag = 0.0f;
+		if (g.type == 0) {
+			c = curand_withtable(states, randTable, length);
+			if (g.hologram < 1) {
+				z_start.real = 0.0f; z_start.imag = 0.0f;
+			}
+			else {
+				z_start.real = -1 + 2 * curand_uniform(&states[index]); z_start.imag = -1 + 2 * curand_uniform(&states[index]);
+			}
 		}
 		else {
-			z_start.real = -1 + 2 * curand_uniform(&states[index]); z_start.imag = -1 + 2 * curand_uniform(&states[index]);
+			z_start = curand_withtable(states, randTable, length);
+			if (g.hologram < 1) {
+				c = g.julia_c;
+			}
+			else {
+				c.real = g.julia_c.real - g.hologram + 2 * g.hologram * curand_uniform(&states[index]);
+				c.imag = g.julia_c.imag - g.hologram + 2 * g.hologram * curand_uniform(&states[index]);
+			}
+			
 		}
 
 		z = z_start;
@@ -229,7 +247,7 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 			// Initialize complex number z
 			z = z_start;
 
-			for (int j = 0; j < THRESHOLD; j++) {
+			for (int j = 0; j < iteration.max_iteration; j++) {
 				z = f(z, c);
 
 				if (z.real * z.real + z.imag * z.imag > 32.0f) {
@@ -237,20 +255,8 @@ __global__ void computeBuddhabrot(unsigned long long int* buddha, graphic g, ite
 				}
 				else{
 					rotated_z = z; //rotated_c = c;
-					rot4d(RotMat, &rotated_z, &c);
+					rot4d(RotMat, RotCenter, &rotated_z, &c);
 					draw_point(buddha, rotated_z, g, 1);
-				}
-			}
-			for (int j = THRESHOLD; j < iteration.max_iteration; j++) {
-				z = f(z, c);
-
-				if (z.real * z.real + z.imag * z.imag > 32.0f) {
-					break;
-				}
-				else {
-					rotated_z = z; //rotated_c = c;
-					rot4d(RotMat, &rotated_z, &c);
-					draw_point(buddha, rotated_z, g, 100);
 				}
 			}
 		}
@@ -270,36 +276,45 @@ int checkImportance(const int* importance, const int i, const int j) {
 	return 0;
 }
 
-unsigned long long int est_min(unsigned long long int* data, unsigned int n) {
+template <typename T>
+T est_min(T* data, unsigned int n) {
 	int length = g.w * g.h;
-	unsigned long long int toReturn[10] = { data[0] };
+	T toReturn[100] = { 0xffff };
 
 	for (int i = 1; i < length; i++) {
-		for (int j = 0; j < 10; j++) {
+		for (int j = 0; j < n; j++) {
 			if (data[i] < toReturn[j]) {
+				for (int k = n-1; k > j; k--)
+					toReturn[k] = toReturn[k - 1];
 				toReturn[j] = data[i];
 				break;
 			}
 		}
 	}
-	return toReturn[n];
+	return toReturn[n - 1];
 }
 
-unsigned long long int est_max(unsigned long long int* data, unsigned int n) {
+template <typename T>
+T est_max(T* data, unsigned int n) {
 	int length = g.w * g.h;
-	unsigned long long int toReturn = data[0];
+	T toReturn[100] = { 0 };
 
 	for (int i = 1; i < length; i++) {
-		if (data[i] > toReturn) {
-			toReturn = data[i];
+		for (int j = 0; j < n; j++) {
+			if (data[i] > toReturn[j]) {
+				for (int k = n-1; k > j; k--)
+					toReturn[k] = toReturn[k - 1];
+				toReturn[j] = data[i];
+				break;
+			}
 		}
 	}
-	return toReturn;
+	return toReturn[n - 1];
 }
 
 void saveImage(unsigned long long int* data) {
 	unsigned long long int min, max;
-	int tmp;
+	int tmp, gradiation = 0xffff;
 	float* normalised_data;
 	FILE* fp = fopen(g.output, "wb");
 
@@ -311,23 +326,19 @@ void saveImage(unsigned long long int* data) {
 	// normalizing.
 	min = est_min(data, 1);
 	max = est_max(data, 1);
-	for (int i = 0; i < g.h; i++) {
-		for (int j = 0; j < g.w; j++) {
-			normalised_data[j + i * g.w] = powf((float)(data[i * g.w + j] - min) / (max - min), 1 / g.gamma);
-		}
+	for (int i = 0; i < g.w * g.h; i++) {
+			normalised_data[i] = powf((float)(data[i] - min) / (max - min), 1.0f / g.gamma);
 	}
 	
-
 	// Denoising.
 	NLMdenoise(normalised_data, 5, 3, g.sigma, g.sigma, g);
 
 	// Write pixel.
-	for (int i = 0; i < g.h; i++) {
-		for (int j = 0; j < g.w; j++) {
-			tmp = (normalised_data[j + i * g.w] > 1.0f) ? 0xff : (int)(0xff * normalised_data[j + i * g.w]);
-			tmp = (normalised_data[j + i * g.w] < 0.0f) ? 0x00 : (int)(0xff * normalised_data[j + i * g.w]);
-			putc(tmp, fp);
-		}
+	for (int i = 0; i < g.w * g.h; i++) {
+		tmp = 0xff * normalised_data[i];
+		tmp = (tmp > 0xff) ? 0xff : tmp;
+		tmp = (tmp < 0) ? 0x00 : tmp;
+		putc(tmp, fp);
 	}
 	
 	free(normalised_data);
@@ -338,7 +349,7 @@ void saveImage(unsigned long long int* data) {
 
 cudaError renderImage(unsigned long long int* buddha) {
 	unsigned long long int* dev_buddha;
-	complex* dev_randTable;
+	complex* dev_randTable, *dev_RotationCenter;
 	float* dev_RotationMatrix;
 
 	dim3 rtblocks = { 256, 256, 1 }, rtthreads = { RTGRIDNUM / rtblocks.x, RTGRIDNUM / rtblocks.y, 1 };
@@ -377,6 +388,12 @@ cudaError renderImage(unsigned long long int* buddha) {
 		goto Error;
 	}
 
+	cudaStatus = cudaMalloc((void**)&dev_RotationCenter, 2 * sizeof(complex));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!\n");
+		goto Error;
+	}
+
 	// Copy input vectors from host memory to GPU buffers.
 	cudaStatus = cudaMemcpy(dev_RotationMatrix, RotationMatrix, 16 * sizeof(float), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
@@ -384,7 +401,13 @@ cudaError renderImage(unsigned long long int* buddha) {
 		goto Error;
 	}
 
-	estImportance <<<rtblocks, rtthreads >>> (dev_importance, g, iteration, dev_RotationMatrix);
+	cudaStatus = cudaMemcpy(dev_RotationCenter, RotCenter, 2 * sizeof(complex), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!\n");
+		goto Error;
+	}
+
+	estImportance <<<rtblocks, rtthreads >>> (dev_importance, g, iteration, dev_RotationMatrix, dev_RotationCenter);
 	// subend_t = clock();
 	// printf("Esting importance has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
@@ -397,7 +420,7 @@ cudaError renderImage(unsigned long long int* buddha) {
 
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching estImportance!\n", cudaStatus);
 		goto Error;
 	}
 	// subend_t = clock();
@@ -473,7 +496,7 @@ cudaError renderImage(unsigned long long int* buddha) {
 	}
 
 	// Compute buddhabrot.
-	computeBuddhabrot <<<BLOCKS, THREADS>>> (dev_buddha, g, iteration, dev_RotationMatrix, dev_states, dev_randTable, sum);
+	computeBuddhabrot <<<BLOCKS, THREADS>>> (dev_buddha, g, iteration, dev_RotationMatrix, dev_RotationCenter, dev_states, dev_randTable, sum);
 	// subend_t = clock();
 	// printf("Computing buddhabrot has done. (%.2f)\n", (double)(subend_t - start_t) / CLOCKS_PER_SEC);
 
@@ -488,7 +511,7 @@ cudaError renderImage(unsigned long long int* buddha) {
 	// any errors encountered during the launch.
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching renderImage!\n", cudaStatus);
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching computeBuddhabrot!\n", cudaStatus);
 		goto Error;
 	}
 	// subend_t = clock();
@@ -507,6 +530,7 @@ Error:
 	cudaFree(dev_buddha);
 	cudaFree(dev_randTable);
 	cudaFree(dev_RotationMatrix);
+	cudaFree(dev_RotationCenter);
 
 	free(randTable);
 
@@ -618,18 +642,23 @@ int main(int argc, char** argv)
 	// Default value.
 	g.w = 1280;
 	g.h = 720;
-	g.center.real = -0.25f; // -0.25f, // 0.325f; // -0.15943359375f;
-	g.center.imag = 0.0f; // 0.0f; // 1.034150390625f;
-	g.size = 3.0f;// 0.03125f;
+	g.center.real = -0.0f;
+	g.center.imag = -0.0f;
+	RotCenter[0] = g.center;
+	g.size = 2.6f;// 0.03125f;
 	g.hologram = 0.0f;
 	g.gamma = 2.0f;
 	sprintf(g.output, "../../output.pmg");
 
-	g.sigma = 0.1f;
+	g.sigma = 0.01f;
+
+	g.type = 1;
+	g.julia_c.real = -0.0f;
+	g.julia_c.imag = -0.0f;
 
 	iteration.samples_per_thread = 16;
 	iteration.min_iteration = 0;
-	iteration.max_iteration = 100000;
+	iteration.max_iteration = 100;
 
 	// Initiarize random generator.
 	{
@@ -648,7 +677,7 @@ int main(int argc, char** argv)
 		}
 	}
 
-	// int max_iterations[3] = {50, 500, 5000};
+	int max_iterations[3] = { 10, 50, 100 };
 
 	// Initiarize "/pgms" folder.
 	for (int i = 0; i < 1000; i++) {
@@ -656,8 +685,8 @@ int main(int argc, char** argv)
 		DeleteFile(tmpfile);
 	}
 
-	for (int n = 0; n < 1; n++) {
-		float angles[6] = { 0.0f, n * 2.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+	for (int n = 0; n < 3; n++) {
+		float angles[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 90.0f, 90.0f };
 		// Set rotation parameter.
 		for (int i = 0; i < 6; i++) {
 			rotation[i].axi1 = rotation_axis[2 * i];
@@ -666,7 +695,7 @@ int main(int argc, char** argv)
 		}
 		sprintf(g.output, "../../pgms/output%03d.pgm", n);
 
-		// iteration.max_iteration = max_iterations[2];
+		iteration.max_iteration = max_iterations[n];
 
 		set_param(argc, argv);
 

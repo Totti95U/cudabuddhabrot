@@ -1,7 +1,6 @@
 #include "types.h"
-#define im new complex { real = 0.0f, imag = 1.0f}
-// kernel and host code.
 
+// kernel and host code.
 template<typename T>
 __device__ __host__
 complex imagf(T a) {
@@ -27,6 +26,22 @@ complex conjf(complex a) {
 	complex tmp;
 	tmp.real = a.real;
 	tmp.imag = -a.imag;
+	return tmp;
+}
+
+__device__ __host__
+complex rabsf(complex a) {
+	complex tmp;
+	tmp.real = (a.real > 0) ? a.real : -a.real;
+	tmp.imag = a.imag;
+	return tmp;
+}
+
+__device__ __host__
+complex iabsf(complex a) {
+	complex tmp;
+	tmp.real = a.real;
+	tmp.imag = (a.imag > 0) ? a.imag : -a.imag;
 	return tmp;
 }
 
